@@ -5,9 +5,9 @@ as it exists today and marks where later phases extend it.
 
 ## Status
 
-Phase 2 (One-way sync) implemented: Salesforce → SyncForge → HubSpot flows
-through Redpanda with exactly-once-effect idempotency. Phases 3–10 build on
-this structure.
+Phase 3 (Bidirectional sync) implemented: Salesforce ↔ SyncForge ↔ HubSpot with
+identity resolution, out-of-order protection, and fingerprint-based loop
+prevention. Phases 4–10 build on this structure.
 
 ## Process model
 
@@ -21,7 +21,7 @@ Infrastructure: PostgreSQL 17 (durable state + RLS), Redis 7 (rate limiting,
 cache), Redpanda (durable event bus), Prometheus + Grafana (metrics), Next.js
 dashboard.
 
-## Event pipeline (Phase 2)
+## Event pipeline
 
 ```text
 provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
@@ -30,10 +30,12 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
    ─▶ publish to Redpanda topic "sync.events" (key = tenant:entity_type:entity_id)
    ─▶ sync worker (consumer group, manual offset commit)
         ├─ ClaimProcessedEvent  (idempotency log; duplicates → no-op)
+        ├─ canonical entity type (provider "contact" → canonical "customer")
         ├─ resolve policy + source/destination connections
-        ├─ normalize (source adapter) → canonical model
-        ├─ denormalize (destination adapter) → write create/update/delete
-        └─ upsert canonical_records (fields, source_versions, provider_ids, tombstone)
+        ├─ identity resolution (provider id → email)
+        ├─ version check (drop out-of-order) → loop check (drop own echoes)
+        ├─ normalize → canonical → denormalize → write create/update/delete
+        └─ upsert canonical_records + outbound_writes fingerprint
 ```
 
 ### Consistency model
@@ -44,19 +46,19 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   work; duplicate deliveries (and the 100-duplicate case) collapse into one
   destination mutation.
 - **Ordering**: per-entity ordering via the partition key
-  `tenant:entity_type:entity_id`. Cross-source ordering + version checks are
-  Phase 3.
+  `tenant:entity_type:entity_id`; per-source version checks drop stale events
+  (`source_versions[source]`), so out-of-order delivery cannot overwrite newer
+  state.
+- **Loop prevention**: `outbound_writes` stores the fingerprint of what was last
+  written to each destination. An incoming event that normalizes to the same
+  fingerprint is SyncForge's own echo and is dropped. Deletes are guarded by the
+  canonical tombstone (a tombstoned entity's delete events are no-ops).
+- **Identity**: provider id lookup first; email fallback links independently
+  created records to the same canonical entity.
 - **Residual window**: a crash between claiming and persisting the canonical
   record can leave a claimed event that is skipped on redelivery; drift is
   repaired by reconciliation (Phase 6). This is the documented tradeoff for
   duplicate-suppression.
-
-### Loop containment (Phase 2, one-way)
-
-Destination writes cause the destination to emit webhooks back to SyncForge.
-With one-way policies those events resolve to no reverse policy and are
-released as no-ops. Phase 3 adds provenance + fingerprint matching for real
-loop prevention in bidirectional mode.
 
 ## Key packages
 
@@ -64,27 +66,29 @@ loop prevention in bidirectional mode.
   classes (`TRANSIENT`, `PERMANENT`, `RATE_LIMITED`, `AUTHENTICATION`,
   `SCHEMA_ERROR`, `CONFLICT`, `NOT_FOUND`), shared HTTP client that classifies
   responses (429 → `RATE_LIMITED` with Retry-After, 5xx → `TRANSIENT`, …).
+  Adapters expose `CanonicalEntityType` so provider naming (HubSpot `contact`)
+  maps to canonical types (`customer`).
 - `internal/connectors/{salesforce,hubspot}` — schema-mapping adapters;
-  `internal/connectors/registry` builds them by name (the only provider switch
-  in the core).
+  `internal/connectors/registry` builds them by name.
 - `internal/simulator` — provider simulator core: in-memory store, cursor
   pagination, token-bucket rate limiter, HMAC-signed webhook dispatch, and a
   fault-injection manager (`/admin/faults`).
 - `internal/eventbus` — `Bus` interface; Redpanda transport (franz-go, manual
   offset commit) and in-memory transport for tests.
 - `internal/ingestion` — processor that drains `source_events` → topic.
-- `internal/syncworker` — idempotent apply logic (claim → map → write →
-  persist).
+- `internal/syncworker` — idempotent bidirectional apply: identity resolution,
+  version checks, echo detection, propagation, canonical persistence.
 - `internal/db` — pgx pools (app/engine), embedded migrations, and the
   `WithTenant` helper that scopes every query to a tenant via
   `SET LOCAL app.tenant_id`.
 - `internal/store` — data-access layer: tenants, connections, api keys,
-  source events, processed events, canonical records, sync policies.
+  source events, processed events, canonical records, sync policies,
+  outbound writes.
 - `internal/api` — HTTP handlers, auth middleware (API keys + bootstrap),
   webhook gateway.
 - `internal/events` — immutable canonical event contract + partition key.
 - `internal/observability` — OpenTelemetry SDK wiring, Prometheus exporter,
-  per-service HTTP + synchronization metrics.
+  per-service HTTP + synchronization metrics (`sync_*`).
 
 ## Security model
 

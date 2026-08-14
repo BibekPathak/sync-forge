@@ -104,6 +104,10 @@ type Connector interface {
 // record into the canonical model and denormalize performs the reverse.
 type Adapter interface {
 	Connector
+	// CanonicalEntityType returns the canonical entity type this adapter
+	// produces, regardless of the provider's own naming (e.g. both
+	// "customer" and "contact" map to the canonical "customer").
+	CanonicalEntityType() string
 	Normalize(rec ProviderRecord) (*model.Customer, error)
 	Denormalize(c *model.Customer) (ProviderRecord, error)
 	Validate(rec ProviderRecord) error

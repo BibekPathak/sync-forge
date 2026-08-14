@@ -14,9 +14,12 @@ log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
 log "Starting SyncForge stack"
 $COMPOSE up -d
-# Recreate api/engine so idempotent seeding re-runs (integration tests may have
-# truncated the dev database).
-$COMPOSE restart api engine >/dev/null
+# Recreate api/engine so idempotent seeding re-runs, and reset the in-memory
+# simulators + sync state so the demo is deterministic regardless of prior runs.
+$COMPOSE restart api engine sim-salesforce sim-hubspot >/dev/null
+docker exec syncforge-postgres-1 psql -U postgres -d syncforge -c \
+  "TRUNCATE canonical_records, source_events, processed_events, outbound_writes,
+           retry_queue, dead_letter, conflicts RESTART IDENTITY CASCADE;" >/dev/null
 echo "Waiting for API to become healthy..."
 for i in $(seq 1 60); do
   if curl -fsS "$API/health" >/dev/null 2>&1; then break; fi
@@ -34,28 +37,42 @@ log "Simulators seeded records"
 echo -n "Salesforce: "; curl -fsS "$SF/api/v1/customers?limit=1" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d['records']),'page of',d.get('has_more'),'more')"
 echo -n "HubSpot:    "; curl -fsS "http://localhost:9082/api/v1/contacts?limit=1" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d['records']),'page of',d.get('has_more'),'more')"
 
-log "Emitting a webhook: update a Salesforce record"
-ID=$(curl -fsS "$SF/api/v1/customers?limit=1" | python3 -c "import sys,json;print(json.load(sys.stdin)['records'][0]['id'])")
-BEFORE=$(curl -fsS "http://localhost:9082/api/v1/contacts?limit=1000" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['records']))")
-curl -fsS -X PATCH "$SF/api/v1/customers/$ID" -H "Content-Type: application/json" -d '{"email":"demo@example.com"}' >/dev/null
+log "Creating a fresh customer in Salesforce (webhook -> pipeline -> HubSpot)"
+EMAIL="demo-$(date +%s)@example.com"
+REC=$(curl -fsS -X POST "$SF/api/v1/customers" -H "Content-Type: application/json" -d "{\"first_name\":\"Demo\",\"last_name\":\"Sync\",\"email\":\"$EMAIL\",\"phone\":\"+1-555-0000\",\"company\":\"Acme\"}")
+ID=$(echo "$REC" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+echo "created Salesforce customer: $ID ($EMAIL)"
 echo "Waiting for the pipeline (webhook -> Redpanda -> worker -> HubSpot)..."
 sleep 4
 
 log "Ingested source events (durable, signed, idempotent)"
 docker exec syncforge-postgres-1 psql -U postgres -d syncforge -c \
-  "SELECT source, entity_type, entity_id, event_type, source_version, status FROM source_events ORDER BY received_at;"
+  "SELECT source, entity_type, entity_id, event_type, source_version, status FROM source_events WHERE status IN ('received','validated','failed') ORDER BY received_at;"
 
 log "Canonical records (provider-id mapping, source versions)"
 docker exec syncforge-postgres-1 psql -U postgres -d syncforge -c \
-  "SELECT entity_id, version, provider_ids, fields->>'email' AS email FROM canonical_records;"
+  "SELECT entity_id, version, provider_ids, fields->>'email' AS email FROM canonical_records WHERE fields->>'email'='$EMAIL';"
 
-log "HubSpot contacts (before=$BEFORE after=$(curl -fsS 'http://localhost:9082/api/v1/contacts?limit=1000' | python3 -c "import sys,json;print(len(json.load(sys.stdin)['records']))"))"
-curl -fsS "http://localhost:9082/api/v1/contacts?limit=1000" | python3 -c "
+log "HubSpot received the new customer"
+HUB=$(curl -fsS "http://localhost:9082/api/v1/contacts?limit=1000" | python3 -c "
 import sys,json
 recs=json.load(sys.stdin)['records']
-demo=[c for c in recs if c.get('emailAddress')=='demo@example.com']
-print('synced record:', demo[0]['contact_id'], demo[0]['emailAddress'] if demo else 'NOT FOUND')
+for c in recs:
+    if c.get('emailAddress')=='$EMAIL': print(c['contact_id']); break
+")
+echo "synced record: $HUB ($EMAIL)"
+
+log "Bidirectional: edit the HubSpot contact -> propagates back to Salesforce"
+curl -fsS -X PATCH "http://localhost:9082/api/v1/contacts/$HUB" -H "Content-Type: application/json" -d '{"phoneNumber":"+1-555-9999"}' >/dev/null
+echo "Waiting for reverse propagation..."
+sleep 4
+curl -fsS "http://localhost:9081/api/v1/customers/$ID" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('Salesforce', d['id'], 'phone now:', d['phone'], '(should be +1-555-9999)')
 "
+echo "Loop prevention check (echo webhooks recognized & dropped):"
+curl -fsS "http://localhost:8081/metrics" | grep -E '^sync_loop_events_prevented_total' | head -1
 
 log "Dashboard:  http://localhost:3001"
 log "Prometheus: http://localhost:9090"

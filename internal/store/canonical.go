@@ -73,6 +73,46 @@ func GetCanonicalByProvider(ctx context.Context, pool *pgxpool.Pool, tenant, ent
 	return out, err
 }
 
+// GetCanonicalByEmail finds a live (non-tombstoned) canonical record by the
+// canonical email field. This is the identity-resolution fallback when a
+// provider id has not been mapped yet (e.g. a HubSpot contact created
+// independently that matches an existing Salesforce customer).
+func GetCanonicalByEmail(ctx context.Context, pool *pgxpool.Pool, tenant, entityType, email string) (CanonicalRecord, error) {
+	out, err := db.WithTenant[CanonicalRecord](ctx, pool, tenant, func(tx pgx.Tx) (CanonicalRecord, error) {
+		var c CanonicalRecord
+		err := tx.QueryRow(ctx,
+			`SELECT sync_id, tenant_id, entity_type, entity_id, fields, version, source_versions,
+			        field_provenance, tombstone, origin_source, origin_event_id, sync_operation_id,
+			        provider_ids, created_at, updated_at
+			 FROM canonical_records
+			 WHERE entity_type=$1 AND tombstone=false AND fields->>'email' = $2
+			 ORDER BY created_at ASC LIMIT 1`,
+			entityType, email,
+		).Scan(&c.SyncID, &c.TenantID, &c.EntityType, &c.EntityID, &c.Fields, &c.Version,
+			&c.SourceVersions, &c.FieldProvenance, &c.Tombstone, &c.OriginSource, &c.OriginEventID,
+			&c.SyncOperationID, &c.ProviderIDs, &c.CreatedAt, &c.UpdatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CanonicalRecord{}, ErrNotFound
+		}
+		return c, err
+	})
+	return out, err
+}
+
+// AddProviderID links an additional provider record id to an existing canonical
+// record (jsonb merge). Used by identity resolution when an independently
+// created record is matched by email.
+func AddProviderID(ctx context.Context, pool *pgxpool.Pool, tenant, entityType, entityID, provider, providerID string) error {
+	return db.WithTenantTx(ctx, pool, tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE canonical_records
+			 SET provider_ids = provider_ids || jsonb_build_object($4::text, $5::text), updated_at=now()
+			 WHERE tenant_id=$1 AND entity_type=$2 AND entity_id=$3`,
+			tenant, entityType, entityID, provider, providerID)
+		return err
+	})
+}
+
 // UpsertCanonical inserts or updates a canonical record and returns its
 // persisted version. All fields except the identity tuple are overwritten.
 func UpsertCanonical(ctx context.Context, pool *pgxpool.Pool, c CanonicalRecord) (CanonicalRecord, error) {

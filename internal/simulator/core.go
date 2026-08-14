@@ -292,6 +292,26 @@ func (s *Server) emit(eventType string, rec *Record) {
 	}
 }
 
+// SetWebhook (re)configures webhook delivery. Used by tests that must wire a
+// simulator's webhooks after the SyncForge gateway URL is known.
+func (s *Server) SetWebhook(url, secret string) {
+	if url == "" {
+		s.Webhook = nil
+		return
+	}
+	s.Webhook = &WebhookDispatcher{
+		URL:        url,
+		Secret:     secret,
+		Source:     s.Spec.Name,
+		EntityType: s.Spec.EntityType,
+		IDKey:      s.Spec.IDKey,
+		TimeKey:    s.Spec.TimeKey,
+		Client:     &http.Client{Timeout: 10 * time.Second},
+		Faults:     s.Faults,
+		Log:        s.Log,
+	}
+}
+
 func (s *Server) recordJSON(rec *Record) map[string]any {
 	data := cloneMap(rec.Data)
 	data[s.Spec.IDKey] = rec.ID

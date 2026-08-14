@@ -1,7 +1,10 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -58,6 +61,17 @@ func (c *Customer) FromFields(fields map[string]any) {
 	c.Email = str(fields["email"])
 	c.Phone = str(fields["phone"])
 	c.Company = str(fields["company"])
+}
+
+// Fingerprint is a deterministic hash of the canonical field values. It is the
+// loop-prevention key: when an incoming event's fingerprint matches what
+// SyncForge last wrote to that source, the event is SyncForge's own echo and is
+// dropped.
+func (c *Customer) Fingerprint() string {
+	h := sha256.New()
+	fmt.Fprintf(h, "first_name=%s|last_name=%s|email=%s|phone=%s|company=%s",
+		c.FirstName, c.LastName, c.Email, c.Phone, c.Company)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func str(v any) string {

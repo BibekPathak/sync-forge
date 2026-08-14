@@ -7,9 +7,9 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 2 (One-way sync) — build in progress.** Salesforce → SyncForge
-> → HubSpot is wired through a durable broker with exactly-once-effect
-> idempotency. See [docs/architecture.md](docs/architecture.md).
+> **Status: Phase 3 (Bidirectional sync) — build in progress.** Salesforce ↔
+> SyncForge ↔ HubSpot with identity resolution, out-of-order protection, and
+> loop prevention. See [docs/architecture.md](docs/architecture.md).
 
 ---
 
@@ -104,9 +104,33 @@ keyed by `(tenant_id, source, event_id)` — the unique constraint guarantees th
 gateway ingests each logical event exactly once (duplicates return "duplicate").
 The canonical sync event contract lives in `internal/events`.
 
-## 6. What Phase 2 delivers
+## 6. What Phase 3 delivers
 
-The first synchronization pipeline, live:
+Bidirectional synchronization. Every apply now runs:
+
+1. **Identity resolution** — map the incoming provider record to a canonical
+   entity by provider id, then by email (a HubSpot contact created
+   independently that shares an email with a Salesforce customer merges into
+   the same canonical record instead of duplicating).
+2. **Ordering** — per-source version check: an event with
+   `source_version <= source_versions[source]` is an out-of-order replay and is
+   dropped (`sync_stale_events_total`).
+3. **Loop prevention** — every write SyncForge makes to a destination is
+   fingerprinted into `outbound_writes`. When a destination echoes that change
+   back, the incoming event normalizes to the same fingerprint → recognized as
+   SyncForge's own write → dropped (`sync_loop_events_prevented_total`). Deletes
+   are guarded by the canonical tombstone. Proven by
+   `TestLoopPrevention` / `TestBidirectionalSync` (versions settle, no
+   oscillation).
+4. **Propagation** — the change is written to every configured destination and
+   the canonical state (fields, per-source versions, provider-id map, tombstones)
+   is persisted.
+
+Policies are bidirectional: `salesforce→hubspot` and `hubspot→salesforce`.
+The adapter layer owns provider→canonical naming (`CanonicalEntityType`, so
+HubSpot's `contact` maps to the canonical `customer`).
+
+### Phase 2 (one-way sync)
 
 ```text
 provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
@@ -121,21 +145,14 @@ provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
   Partition key = `tenant:entity_type:entity_id` gives per-entity ordering.
 - **Ingestion processor** (`internal/ingestion`): polls `source_events` for
   `received` events, publishes to `sync.events`, transitions to `validated`.
-  The webhook gateway is broker-independent — events are durable in Postgres
-  until published.
-- **Sync worker** (`internal/syncworker`): consumes events, claims them in the
-  `processed_events` idempotency log, resolves the sync policy and provider
-  connections, normalizes source → canonical → denormalizes to destination,
-  writes via the destination connector, and persists canonical state
-  (fields, per-source versions, provider-id map, tombstones).
+- **Sync worker** (`internal/syncworker`): claims events in the `processed_events`
+  idempotency log, resolves policy + connections, maps and writes, persists
+  canonical state.
 - **Idempotency (exactly-once effect)**: `processed_events` PK
   `(tenant_id, source, event_id)` is claimed *before* any work; duplicate
   deliveries are no-ops. Proven by `TestWorkerDedupes100Duplicates`
-  (100 duplicates → 1 destination mutation) and `TestPipelineWebhookToDestination`.
-- **Delete propagation**: tombstones retained in `canonical_records`, deletes
-  propagated to the destination per policy.
-- **Loop containment (one-way)**: events that originate from SyncForge's own
-  destination writes have no reverse policy and are released as no-ops.
+  (100 duplicates → 1 destination mutation).
+- **Delete propagation**: tombstones retained, deletes propagated per policy.
 
 ### Phase 1 (foundation)
 
@@ -203,24 +220,31 @@ Tests that currently exist:
   destination create/update/delete; **100 duplicate events → exactly 1
   destination mutation**; canonical provider-id mapping + source versions;
   delete propagation + tombstones.
+- **Bidirectional (integration, in-process)**: SF→HS and HS→SF propagation with
+  settlement (no oscillation); **loop prevention** (echo recognized as own
+  write, not re-propagated); **out-of-order** (v3 then v2 → v2 dropped);
+  **identity resolution by email** (independent HubSpot contact merges into the
+  existing canonical instead of duplicating).
 
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 2)
+## 9. Known limitations (Phase 3)
 
-- Bidirectional sync, conflict detection, version/ordering checks across
-  sources, and full loop prevention via provenance are Phase 3.
-- Failed destination writes mark the event `failed` in `source_events`; the
-  durable retry queue + DLQ arrive in Phase 4 (reconciliation in Phase 6 will
-  also detect drift).
+- Conflict *detection* is not yet built: a concurrent edit of the same field in
+  both systems still silently applies (Phase 5 adds conflicts + resolution
+  strategies; field provenance is tracked from now on).
+- Identity resolution is email-only and single-match; ambiguous or missing
+  emails fall back to a new canonical record.
+- Failed destination writes are marked `failed`; the durable retry queue + DLQ
+  arrive in Phase 4.
 - Tenant management is gated by a fixed bootstrap key until full RBAC (Phase 7).
 - Simulated providers keep state in memory (intentional: they are external
   systems; their durability isn't SyncForge's concern).
 
 ## 10. Next phases
 
-Phase 3 — bidirectional sync: identity resolution, per-source version checking
-(out-of-order protection), provenance + fingerprint-based loop prevention, and
-conflict detection. Then reliability (retries/backoff/DLQ/rate limiting),
-reconciliation, RBAC, observability, failure injection, and benchmarking.
+Phase 4 — reliability: durable retries with exponential backoff + jitter,
+failure classification, dead-letter queue + replay APIs, adaptive rate limiting.
+Then conflict resolution (Phase 5), reconciliation (Phase 6), RBAC, observability,
+failure injection, and benchmarking.

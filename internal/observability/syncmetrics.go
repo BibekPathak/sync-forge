@@ -12,6 +12,8 @@ type SyncMetrics struct {
 	EventsFailed       metric.Int64Counter
 	Duplicates         metric.Int64Counter
 	DestinationWrites  metric.Int64Counter
+	StaleEvents        metric.Int64Counter
+	LoopsPrevented     metric.Int64Counter
 	ProcessingDuration metric.Float64Histogram
 }
 
@@ -46,12 +48,24 @@ func NewSyncMetrics(meter metric.Meter) (*SyncMetrics, error) {
 	if err != nil {
 		return nil, err
 	}
+	stale, err := meter.Int64Counter("sync_stale_events_total",
+		metric.WithDescription("Out-of-order events dropped by version checks"))
+	if err != nil {
+		return nil, err
+	}
+	loops, err := meter.Int64Counter("sync_loop_events_prevented_total",
+		metric.WithDescription("Echo events recognized as SyncForge's own writes and dropped"))
+	if err != nil {
+		return nil, err
+	}
 	return &SyncMetrics{
 		EventsTotal:        eventsTotal,
 		EventsSuccess:      eventsSuccess,
 		EventsFailed:       eventsFailed,
 		Duplicates:         duplicates,
 		DestinationWrites:  destWrites,
+		StaleEvents:        stale,
+		LoopsPrevented:     loops,
 		ProcessingDuration: duration,
 	}, nil
 }

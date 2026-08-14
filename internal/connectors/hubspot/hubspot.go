@@ -33,6 +33,9 @@ func New(baseURL, token string, timeout time.Duration) *Connector {
 
 func (c *Connector) Name() string { return Provider }
 
+// CanonicalEntityType: HubSpot's "contact" maps to the canonical "customer".
+func (c *Connector) CanonicalEntityType() string { return "customer" }
+
 func (c *Connector) HealthCheck(ctx context.Context) (connectors.Health, error) {
 	var out struct {
 		Status string `json:"status"`

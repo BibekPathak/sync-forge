@@ -113,6 +113,11 @@ func newPipelineHarness(t *testing.T) *pipelineHarness {
 		t.Fatalf("worker never subscribed: %v", err)
 	}
 
+	// Wire provider webhooks into the SyncForge gateway so bidirectional flows
+	// (including echo webhooks) are exercised end-to-end.
+	sfSrv.SetWebhook(apiSim.URL+"/webhooks/salesforce/acme", "sfs-dev-secret")
+	hubSrv.SetWebhook(apiSim.URL+"/webhooks/hubspot/acme", "sfh-dev-secret")
+
 	return &pipelineHarness{
 		db:      database,
 		bus:     bus,
@@ -140,6 +145,46 @@ func (h *pipelineHarness) hubContacts(t *testing.T) []map[string]any {
 		t.Fatal(err)
 	}
 	return body.Records
+}
+
+// sfCustomers returns all records currently in the Salesforce simulator.
+func (h *pipelineHarness) sfCustomers(t *testing.T) []map[string]any {
+	t.Helper()
+	resp, err := http.Get(h.sfSim.URL + "/api/v1/customers?limit=1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Records []map[string]any `json:"records"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Records
+}
+
+// findHub returns the hubspot contact matching the predicate.
+func findHub(recs []map[string]any, pred func(map[string]any) bool) map[string]any {
+	for _, r := range recs {
+		if pred(r) {
+			return r
+		}
+	}
+	return nil
+}
+
+// waitFor polls fn until it returns true.
+func waitFor(t *testing.T, timeout time.Duration, msg string, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for: %s", msg)
 }
 
 func (h *pipelineHarness) waitForHubContact(t *testing.T, want int) []map[string]any {
@@ -269,12 +314,14 @@ func TestWorkerDedupes100Duplicates(t *testing.T) {
 		t.Fatalf("100 duplicates created %d destination records (want exactly 1)", len(contacts))
 	}
 
-	processed, err := store.ProcessedCount(ctx, h.db.App, h.acmeID)
+	// The duplicate event itself must be claimed exactly once (the hubspot echo
+	// is a distinct event and may be claimed separately).
+	_, ok, err := store.ProcessedEventAt(ctx, h.db.App, h.acmeID, "salesforce", "dup-evt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if processed != 1 {
-		t.Fatalf("idempotency log has %d entries (want exactly 1)", processed)
+	if !ok {
+		t.Fatal("the original event was never marked processed")
 	}
 }
 
