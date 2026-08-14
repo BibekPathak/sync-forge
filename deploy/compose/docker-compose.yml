@@ -1,0 +1,159 @@
+name: syncforge
+
+x-go-service: &go-service
+  image: syncforge:dev
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    redpanda:
+      condition: service_started
+  environment: &go-env
+    DATABASE_URL: postgres://syncforge_app:syncforge_app@postgres:5432/syncforge?sslmode=disable
+    ADMIN_DATABASE_URL: postgres://syncforge_engine:syncforge_engine@postgres:5432/syncforge?sslmode=disable
+    REDIS_ADDR: redis:6379
+    SYNCFORGE_ENV: development
+    SYNCFORGE_BOOTSTRAP_KEY: syncforge-admin-dev
+    SYNCFORGE_SEED_ACME: "true"
+    SYNCFORGE_SEED_SALESFORCE_URL: http://sim-salesforce:9081
+    SYNCFORGE_SEED_HUBSPOT_URL: http://sim-hubspot:9082
+    SYNCFORGE_SEED_SALESFORCE_WEBHOOK_SECRET: sfs-dev-secret
+    SYNCFORGE_SEED_HUBSPOT_WEBHOOK_SECRET: sfh-dev-secret
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: syncforge
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../docker/init-postgres.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d syncforge"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      - "29092:29092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health -X brokers=redpanda:29092 2>&1 | grep -q 'Healthy:.*true' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  api:
+    <<: *go-service
+    command: ["api"]
+    environment:
+      <<: *go-env
+      HTTP_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+
+  engine:
+    <<: *go-service
+    command: ["engine"]
+    environment:
+      <<: *go-env
+      HTTP_ADDR: ":8081"
+    ports:
+      - "8081:8081"
+
+  sim-salesforce:
+    <<: *go-service
+    command: ["sim-salesforce"]
+    environment:
+      HTTP_ADDR: ":9081"
+      SIM_RATE_LIMIT: "100"
+      SIM_SEED_COUNT: "100"
+      SIM_WEBHOOK_URL: http://api:8080/webhooks/salesforce/acme
+      SIM_WEBHOOK_SECRET: sfs-dev-secret
+    ports:
+      - "9081:9081"
+
+  sim-hubspot:
+    <<: *go-service
+    command: ["sim-hubspot"]
+    environment:
+      HTTP_ADDR: ":9082"
+      SIM_RATE_LIMIT: "50"
+      SIM_SEED_COUNT: "100"
+      SIM_WEBHOOK_URL: http://api:8080/webhooks/hubspot/acme
+      SIM_WEBHOOK_SECRET: sfh-dev-secret
+    ports:
+      - "9082:9082"
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+      - engine
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  dashboard:
+    build:
+      context: ../../dashboard
+    ports:
+      - "3001:3001"
+    environment:
+      API_BASE: http://api:8080
+      PORT: "3001"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:

@@ -1,0 +1,77 @@
+package observability
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	promcli "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/prometheus"
+	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+)
+
+// InitMetrics builds a Prometheus-backed OTel meter provider for a service.
+// Returns an HTTP handler serving /metrics and a shutdown func.
+func InitMetrics(ctx context.Context, service string) (http.Handler, func(), error) {
+	exporter, err := prometheus.New(
+		prometheus.WithRegisterer(promcli.DefaultRegisterer),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceName(service),
+	)
+
+	provider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithResource(res),
+		sdkmetric.WithReader(exporter),
+	)
+	otel.SetMeterProvider(provider)
+
+	shutdown := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = provider.Shutdown(ctx)
+	}
+	return promhttp.Handler(), shutdown, nil
+}
+
+// ServiceMetrics centralizes the counters/histograms every service records.
+type ServiceMetrics struct {
+	Meter        metric.Meter
+	HTTPRequests metric.Int64Counter
+	HTTPDuration metric.Float64Histogram
+	HTTPInflight metric.Int64UpDownCounter
+}
+
+func NewServiceMetrics(meter metric.Meter) (*ServiceMetrics, error) {
+	requests, err := meter.Int64Counter("http_requests_total",
+		metric.WithDescription("Total HTTP requests handled"))
+	if err != nil {
+		return nil, err
+	}
+	duration, err := meter.Float64Histogram("http_request_duration_seconds",
+		metric.WithDescription("HTTP request latency in seconds"))
+	if err != nil {
+		return nil, err
+	}
+	inflight, err := meter.Int64UpDownCounter("http_inflight_requests",
+		metric.WithDescription("Currently in-flight HTTP requests"))
+	if err != nil {
+		return nil, err
+	}
+	return &ServiceMetrics{
+		Meter:        meter,
+		HTTPRequests: requests,
+		HTTPDuration: duration,
+		HTTPInflight: inflight,
+	}, nil
+}

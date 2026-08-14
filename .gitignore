@@ -1,0 +1,46 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+go.work
+go.work.sum
+
+# Node / Next.js
+node_modules/
+dashboard/.next/
+dashboard/out/
+npm-debug.log*
+yarn-error.log*
+
+# Docker
+docker-compose.override.yml
+*.dockerignore
+
+# Local volumes (bind-mounted dev data)
+pgdata/
+promdata/
+grafanadata/
+
+# Environment / secrets — keep the example
+.env
+*.env
+!.env.example
+!deploy/compose/.env.example
+*.pem
+*.key
+*.crt
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs / temp
+*.log
+tmp/
+/tmp/
