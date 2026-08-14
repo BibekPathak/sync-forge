@@ -7,9 +7,9 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 1 (Foundation) — build in progress.** See
-> [docs/architecture.md](docs/architecture.md) and the README section below for
-> what exists today.
+> **Status: Phase 2 (One-way sync) — build in progress.** Salesforce → SyncForge
+> → HubSpot is wired through a durable broker with exactly-once-effect
+> idempotency. See [docs/architecture.md](docs/architecture.md).
 
 ---
 
@@ -104,7 +104,40 @@ keyed by `(tenant_id, source, event_id)` — the unique constraint guarantees th
 gateway ingests each logical event exactly once (duplicates return "duplicate").
 The canonical sync event contract lives in `internal/events`.
 
-## 6. What Phase 1 delivers
+## 6. What Phase 2 delivers
+
+The first synchronization pipeline, live:
+
+```text
+provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
+   ─▶ source_events (durable, unique tenant+source+event_id)
+   ─▶ ingestion processor (drains source_events, publishes to Redpanda)
+   ─▶ sync worker (idempotency claim ─▶ normalize ─▶ map ─▶ write destination)
+   ─▶ canonical_records (provider-id mapping, source versions, tombstones)
+```
+
+- **Event bus**: `internal/eventbus` with a Redpanda transport (franz-go,
+  manual offset commits = at-least-once) and an in-memory transport for tests.
+  Partition key = `tenant:entity_type:entity_id` gives per-entity ordering.
+- **Ingestion processor** (`internal/ingestion`): polls `source_events` for
+  `received` events, publishes to `sync.events`, transitions to `validated`.
+  The webhook gateway is broker-independent — events are durable in Postgres
+  until published.
+- **Sync worker** (`internal/syncworker`): consumes events, claims them in the
+  `processed_events` idempotency log, resolves the sync policy and provider
+  connections, normalizes source → canonical → denormalizes to destination,
+  writes via the destination connector, and persists canonical state
+  (fields, per-source versions, provider-id map, tombstones).
+- **Idempotency (exactly-once effect)**: `processed_events` PK
+  `(tenant_id, source, event_id)` is claimed *before* any work; duplicate
+  deliveries are no-ops. Proven by `TestWorkerDedupes100Duplicates`
+  (100 duplicates → 1 destination mutation) and `TestPipelineWebhookToDestination`.
+- **Delete propagation**: tombstones retained in `canonical_records`, deletes
+  propagated to the destination per policy.
+- **Loop containment (one-way)**: events that originate from SyncForge's own
+  destination writes have no reverse policy and are released as no-ops.
+
+### Phase 1 (foundation)
 
 - Go monorepo: `cmd/{api,engine,sim-salesforce,sim-hubspot}` + `internal/*`.
 - PostgreSQL schema + migrations + enforced RLS + two roles.
@@ -166,21 +199,28 @@ Tests that currently exist:
 - **Integration**: cross-tenant read/write isolation under RLS, fail-closed
   reads without a tenant context, signed webhook ingest + duplicate suppression,
   API auth (API key / bootstrap).
+- **Pipeline (integration, in-process)**: webhook → ingestion → bus → worker →
+  destination create/update/delete; **100 duplicate events → exactly 1
+  destination mutation**; canonical provider-id mapping + source versions;
+  delete propagation + tombstones.
 
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 1)
+## 9. Known limitations (Phase 2)
 
-- Engine has no event-processing workers yet (Phase 2).
+- Bidirectional sync, conflict detection, version/ordering checks across
+  sources, and full loop prevention via provenance are Phase 3.
+- Failed destination writes mark the event `failed` in `source_events`; the
+  durable retry queue + DLQ arrive in Phase 4 (reconciliation in Phase 6 will
+  also detect drift).
 - Tenant management is gated by a fixed bootstrap key until full RBAC (Phase 7).
 - Simulated providers keep state in memory (intentional: they are external
   systems; their durability isn't SyncForge's concern).
-- Redpanda is booted but unused until Phase 2 (broker-backed pipeline).
 
 ## 10. Next phases
 
-Phase 2 — Salesforce → SyncForge → HubSpot one-way sync: webhook → queue →
-worker → destination, with durable idempotency. Then bidirectional sync,
-reliability (retries/DLQ/rate limiting), conflicts, reconciliation, RBAC,
-observability, failure injection, and benchmarking. See `docs/architecture.md`.
+Phase 3 — bidirectional sync: identity resolution, per-source version checking
+(out-of-order protection), provenance + fingerprint-based loop prevention, and
+conflict detection. Then reliability (retries/backoff/DLQ/rate limiting),
+reconciliation, RBAC, observability, failure injection, and benchmarking.

@@ -7,12 +7,18 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	"syncforge/internal/config"
 	"syncforge/internal/db"
+	"syncforge/internal/eventbus"
+	"syncforge/internal/ingestion"
 	"syncforge/internal/observability"
+	"syncforge/internal/syncworker"
 	"syncforge/migrations"
 )
 
@@ -22,7 +28,7 @@ func main() {
 
 	cfg := config.Load()
 	cfg.Service = "engine"
-	logger.Info("starting engine", "config", cfg.String())
+	logger.Info("starting engine", "config", cfg.String(), "kafka", cfg.KafkaBrokers)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -48,17 +54,43 @@ func main() {
 	}
 	defer shutdownMetrics()
 
-	// Phase 1: the engine boots, owns migrations, and exposes health/metrics.
-	// Phase 2+ adds the event processor, sync workers, retry and reconciliation.
-	logger.Info("engine ready (workers arriving in Phase 2)")
+	syncMetrics, err := observability.NewSyncMetrics(otel.Meter("syncforge-engine"))
+	if err != nil {
+		logger.Error("sync metrics init failed", "error", err)
+		os.Exit(1)
+	}
+
+	var bus eventbus.Bus
+	if strings.TrimSpace(cfg.KafkaBrokers) == "" || cfg.KafkaBrokers == "memory" {
+		bus = eventbus.NewMemoryBus(logger)
+		logger.Info("using in-memory event bus (no broker)")
+	} else {
+		brokers := strings.Split(cfg.KafkaBrokers, ",")
+		bus, err = eventbus.NewRedpanda(brokers, logger)
+		if err != nil {
+			logger.Error("event bus init failed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("using redpanda event bus", "brokers", cfg.KafkaBrokers)
+	}
+	defer bus.Close()
+
+	worker := syncworker.New(database, syncMetrics, logger)
+	processor := ingestion.New(database, bus, logger)
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- processor.Run(ctx)
+	}()
+	go func() {
+		errCh <- bus.Subscribe(ctx, eventbus.TopicSyncEvents, cfg.KafkaGroupID, worker.Handle)
+	}()
 
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           engineHandler(metricsHandler),
+		Handler:           engineHandler(metricsHandler, database, bus),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
-	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("engine http listening", "addr", cfg.HTTPAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -69,20 +101,34 @@ func main() {
 	select {
 	case err := <-errCh:
 		logger.Error("engine failed", "error", err)
-		os.Exit(1)
+		stop()
 	case <-ctx.Done():
-		logger.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-		_ = httpSrv.Shutdown(shutdownCtx)
 	}
+	logger.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	_ = httpSrv.Shutdown(shutdownCtx)
 }
 
-func engineHandler(metricsHandler http.Handler) http.Handler {
+func engineHandler(metricsHandler http.Handler, database *db.DB, bus eventbus.Bus) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		hctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		dbStatus := "ok"
+		if err := database.App.Ping(hctx); err != nil {
+			dbStatus = "error"
+		}
+		busStatus := "ok"
+		if err := bus.Health(hctx); err != nil {
+			busStatus = "error"
+		}
+		status := http.StatusOK
+		if dbStatus != "ok" || busStatus != "ok" {
+			status = http.StatusServiceUnavailable
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"healthy","service":"engine"}`))
+		_, _ = w.Write([]byte(`{"status":"` + map[bool]string{true: "healthy", false: "degraded"}[status == http.StatusOK] + `","database":"` + dbStatus + `","bus":"` + busStatus + `","service":"engine"}`))
 	})
 	mux.Handle("GET /metrics", metricsHandler)
 	return mux

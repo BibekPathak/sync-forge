@@ -34,14 +34,28 @@ log "Simulators seeded records"
 echo -n "Salesforce: "; curl -fsS "$SF/api/v1/customers?limit=1" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d['records']),'page of',d.get('has_more'),'more')"
 echo -n "HubSpot:    "; curl -fsS "http://localhost:9082/api/v1/contacts?limit=1" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d['records']),'page of',d.get('has_more'),'more')"
 
-log "Emitting a webhook: update a Salesforce record (v2)"
+log "Emitting a webhook: update a Salesforce record"
 ID=$(curl -fsS "$SF/api/v1/customers?limit=1" | python3 -c "import sys,json;print(json.load(sys.stdin)['records'][0]['id'])")
+BEFORE=$(curl -fsS "http://localhost:9082/api/v1/contacts?limit=1000" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['records']))")
 curl -fsS -X PATCH "$SF/api/v1/customers/$ID" -H "Content-Type: application/json" -d '{"email":"demo@example.com"}' >/dev/null
-sleep 2
+echo "Waiting for the pipeline (webhook -> Redpanda -> worker -> HubSpot)..."
+sleep 4
 
 log "Ingested source events (durable, signed, idempotent)"
 docker exec syncforge-postgres-1 psql -U postgres -d syncforge -c \
   "SELECT source, entity_type, entity_id, event_type, source_version, status FROM source_events ORDER BY received_at;"
+
+log "Canonical records (provider-id mapping, source versions)"
+docker exec syncforge-postgres-1 psql -U postgres -d syncforge -c \
+  "SELECT entity_id, version, provider_ids, fields->>'email' AS email FROM canonical_records;"
+
+log "HubSpot contacts (before=$BEFORE after=$(curl -fsS 'http://localhost:9082/api/v1/contacts?limit=1000' | python3 -c "import sys,json;print(len(json.load(sys.stdin)['records']))"))"
+curl -fsS "http://localhost:9082/api/v1/contacts?limit=1000" | python3 -c "
+import sys,json
+recs=json.load(sys.stdin)['records']
+demo=[c for c in recs if c.get('emailAddress')=='demo@example.com']
+print('synced record:', demo[0]['contact_id'], demo[0]['emailAddress'] if demo else 'NOT FOUND')
+"
 
 log "Dashboard:  http://localhost:3001"
 log "Prometheus: http://localhost:9090"

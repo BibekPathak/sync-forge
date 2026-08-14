@@ -110,3 +110,48 @@ func ListSourceEvents(ctx context.Context, pool *pgxpool.Pool, tenantID string, 
 	})
 	return out, err
 }
+
+// SetSourceEventStatus transitions an event from one status to another
+// (e.g. received -> validated, validated -> processed/failed). The FROM guard
+// makes status transitions atomic; a missing or already-transitioned row is a
+// benign no-op.
+func SetSourceEventStatus(ctx context.Context, pool *pgxpool.Pool, tenant, eventID, from, to string) error {
+	return db.WithTenantTx(ctx, pool, tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE source_events SET status=$1 WHERE event_id=$2 AND status=$3`,
+			to, eventID, from)
+		return err
+	})
+}
+
+// PendingSourceEvents scans for not-yet-published events across all tenants.
+// Runs on the admin pool (cross-tenant) with row locking so ingestion workers
+// can run concurrently. Returns events with status='received'.
+func PendingSourceEvents(ctx context.Context, pool *pgxpool.Pool, limit int) ([]SourceEvent, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT id, tenant_id, source, event_id, entity_type, entity_id, event_type,
+		        source_version, occurred_at, correlation_id, provenance, raw
+		 FROM source_events
+		 WHERE status='received'
+		 ORDER BY received_at
+		 LIMIT $1
+		 FOR UPDATE SKIP LOCKED`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []SourceEvent
+	for rows.Next() {
+		var ev SourceEvent
+		if err := rows.Scan(&ev.ID, &ev.TenantID, &ev.Source, &ev.EventID, &ev.EntityType, &ev.EntityID,
+			&ev.EventType, &ev.SourceVersion, &ev.OccurredAt, &ev.CorrelationID, &ev.Provenance, &ev.Raw); err != nil {
+			return nil, err
+		}
+		ev.Status = "received"
+		res = append(res, ev)
+	}
+	return res, rows.Err()
+}

@@ -21,25 +21,25 @@ type Provenance struct {
 
 // Event is the canonical synchronization event. Events are immutable: once
 // produced they are never mutated. The payload holds provider-native fields.
+// The JSON contract is stable snake_case, shared with any consumer.
 type Event struct {
-	EventID    string
-	TenantID   string
-	Source     string
-	EntityType string
-	EntityID   string
-	EventType  EventType
+	EventID    string    `json:"event_id"`
+	TenantID   string    `json:"tenant_id"`
+	Source     string    `json:"source"`
+	EntityType string    `json:"entity_type"`
+	EntityID   string    `json:"entity_id"`
+	EventType  EventType `json:"event_type"`
 
 	// SourceVersion is the provider's version number for the entity at the
 	// time the event was emitted. Used for ordering and stale-event rejection.
-	SourceVersion int64
+	SourceVersion int64     `json:"source_version"`
+	OccurredAt    time.Time `json:"occurred_at"`
+	ReceivedAt    time.Time `json:"received_at"`
+	CorrelationID string    `json:"correlation_id,omitempty"`
 
-	OccurredAt    time.Time
-	ReceivedAt    time.Time
-	CorrelationID string
+	Provenance Provenance `json:"provenance,omitempty"`
 
-	Provenance Provenance
-
-	Payload map[string]any
+	Payload map[string]any `json:"payload"`
 }
 
 // Key returns the deterministic idempotency key for this event.

@@ -19,6 +19,9 @@ type Config struct {
 
 	BootstrapKey string
 
+	KafkaBrokers string
+	KafkaGroupID string
+
 	SeedAcme       bool
 	SeedSFBaseURL  string
 	SeedHubBaseURL string
@@ -38,6 +41,9 @@ func Load() Config {
 		RedisAddr:  get("REDIS_ADDR", "localhost:6379"),
 
 		BootstrapKey: get("SYNCFORGE_BOOTSTRAP_KEY", "syncforge-admin-dev"),
+
+		KafkaBrokers: get("KAFKA_BROKERS", "localhost:29092"),
+		KafkaGroupID: get("KAFKA_GROUP_ID", "syncforge-engine"),
 
 		SeedAcme:       getBool("SYNCFORGE_SEED_ACME", true),
 		SeedSFBaseURL:  get("SYNCFORGE_SEED_SALESFORCE_URL", "http://localhost:9081"),

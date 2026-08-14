@@ -61,5 +61,23 @@ func (s *Server) seed(ctx context.Context) (struct{}, error) {
 		s.log.Info("seeded api key", "tenant", tenant.Slug)
 	}
 
+	// Default policy: customers flow from Salesforce to HubSpot.
+	_, err = store.UpsertSyncPolicy(ctx, s.db.App, store.SyncPolicy{
+		TenantID:         tenant.ID,
+		Entity:           "customer",
+		Source:           "salesforce",
+		Destination:      "hubspot",
+		Mode:             "one_way",
+		ConflictStrategy: "field_merge",
+		DeletePolicy:     "propagate",
+		RetryPolicy:      "exponential_backoff",
+		SourcePriority:   100,
+		Enabled:          true,
+	})
+	if err != nil {
+		return struct{}{}, fmt.Errorf("seed sync policy: %w", err)
+	}
+	s.log.Info("seeded sync policy", "tenant", tenant.Slug, "entity", "customer", "flow", "salesforce->hubspot")
+
 	return struct{}{}, nil
 }

@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 COMPOSE := docker compose -f deploy/compose/docker-compose.yml
-DB_URL ?= postgres://syncforge_app:syncforge_app@localhost:5432/syncforge?sslmode=disable
-ADMIN_URL ?= postgres://syncforge_engine:syncforge_engine@localhost:5432/syncforge?sslmode=disable
+DB_URL ?= postgres://syncforge_app:syncforge_app@localhost:5432/syncforge_test?sslmode=disable
+ADMIN_URL ?= postgres://syncforge_engine:syncforge_engine@localhost:5432/syncforge_test?sslmode=disable
 
 .PHONY: build test test-unit test-integration up down logs demo fmt vet migrate
 

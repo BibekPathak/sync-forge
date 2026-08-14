@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	appDSN   = getenv("DATABASE_URL", "postgres://syncforge_app:syncforge_app@localhost:5432/syncforge?sslmode=disable")
-	adminDSN = getenv("ADMIN_DATABASE_URL", "postgres://syncforge_engine:syncforge_engine@localhost:5432/syncforge?sslmode=disable")
+	appDSN   = getenv("DATABASE_URL", "postgres://syncforge_app:syncforge_app@localhost:5432/syncforge_test?sslmode=disable")
+	adminDSN = getenv("ADMIN_DATABASE_URL", "postgres://syncforge_engine:syncforge_engine@localhost:5432/syncforge_test?sslmode=disable")
 )
 
 func getenv(k, def string) string {

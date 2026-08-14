@@ -12,3 +12,12 @@ GRANT ALL PRIVILEGES ON DATABASE syncforge TO syncforge_engine;
 -- role owns the tables it creates, so it needs schema CREATE.
 GRANT CREATE ON SCHEMA public TO syncforge_app;
 GRANT CREATE ON SCHEMA public TO syncforge_engine;
+
+-- Dedicated test database so `make test-integration` never touches dev data
+-- (and cannot race the running engine's workers).
+CREATE DATABASE syncforge_test;
+GRANT ALL PRIVILEGES ON DATABASE syncforge_test TO syncforge_app;
+GRANT ALL PRIVILEGES ON DATABASE syncforge_test TO syncforge_engine;
+\c syncforge_test
+GRANT CREATE ON SCHEMA public TO syncforge_app;
+GRANT CREATE ON SCHEMA public TO syncforge_engine;

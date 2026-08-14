@@ -91,6 +91,8 @@ services:
     environment:
       <<: *go-env
       HTTP_ADDR: ":8081"
+      KAFKA_BROKERS: redpanda:29092
+      KAFKA_GROUP_ID: syncforge-engine
     ports:
       - "8081:8081"
 
