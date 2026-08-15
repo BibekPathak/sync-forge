@@ -83,8 +83,11 @@ type Page struct {
 
 // Health describes connector health.
 type Health struct {
-	Status    string // "healthy" | "unhealthy"
-	Message   string
+	Status  string // "healthy" | "unhealthy"
+	Message string
+	// Records is the provider's reported record count (used to size a full
+	// sync job's progress bar). 0 when the provider does not report it.
+	Records   int64
 	CheckedAt time.Time
 }
 

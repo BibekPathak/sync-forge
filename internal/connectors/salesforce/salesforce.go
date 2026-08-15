@@ -33,6 +33,12 @@ func New(baseURL, token string, timeout time.Duration) *Connector {
 	return &Connector{client: connectors.NewClient(baseURL, token, timeout)}
 }
 
+// NewRateLimited builds a Salesforce connector with a client-side token-bucket
+// pacing requests at perMinute requests/minute.
+func NewRateLimited(baseURL, token string, timeout time.Duration, perMinute int) *Connector {
+	return &Connector{client: connectors.NewRateLimitedClient(baseURL, token, timeout, perMinute)}
+}
+
 func (c *Connector) Name() string { return Provider }
 
 // CanonicalEntityType: the canonical model calls it "customer".
@@ -40,13 +46,14 @@ func (c *Connector) CanonicalEntityType() string { return "customer" }
 
 func (c *Connector) HealthCheck(ctx context.Context) (connectors.Health, error) {
 	var out struct {
-		Status string `json:"status"`
+		Status  string `json:"status"`
+		Records int64  `json:"records"`
 	}
 	err := c.client.Do(ctx, "GET", "/admin/health", nil, &out)
 	if err != nil {
 		return connectors.Health{Status: "unhealthy", CheckedAt: time.Now()}, err
 	}
-	return connectors.Health{Status: out.Status, CheckedAt: time.Now()}, nil
+	return connectors.Health{Status: out.Status, Records: out.Records, CheckedAt: time.Now()}, nil
 }
 
 func (c *Connector) List(ctx context.Context, opts connectors.ListOptions) (connectors.Page, error) {

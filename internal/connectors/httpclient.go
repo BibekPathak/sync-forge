@@ -11,15 +11,17 @@ import (
 	"time"
 )
 
-// Client is a small HTTP client shared by provider connectors. It classifies
-// non-2xx responses into typed connector errors (rate limit, auth, transient,
-// permanent) so the retry engine can act appropriately.
+// Client is a small HTTP client shared by provider connectors. It paces
+// requests through an optional token bucket and classifies non-2xx responses
+// into typed connector errors (rate limit, auth, transient, permanent) so the
+// retry engine can act appropriately.
 type Client struct {
 	BaseURL    string
 	Token      string
 	HTTP       *http.Client
 	UserAgent  string
 	HeaderAuth string // "Bearer" or "Token"; empty means no auth header
+	Limit      *Limiter
 }
 
 func NewClient(baseURL, token string, timeout time.Duration) *Client {
@@ -29,6 +31,16 @@ func NewClient(baseURL, token string, timeout time.Duration) *Client {
 		HTTP:      &http.Client{Timeout: timeout},
 		UserAgent: "syncforge/0.1",
 	}
+}
+
+// NewRateLimitedClient builds a client that paces requests to perMinute
+// requests using a token bucket. Mirrors the provider's documented API limit.
+func NewRateLimitedClient(baseURL, token string, timeout time.Duration, perMinute int) *Client {
+	c := NewClient(baseURL, token, timeout)
+	if perMinute > 0 {
+		c.Limit = NewLimiter(perMinute)
+	}
+	return c
 }
 
 // Do performs a request against the provider API. out, if non-nil, is the JSON
@@ -41,6 +53,12 @@ func (c *Client) Do(ctx context.Context, method, path string, body any, out any)
 			return NewError(ErrSchema, "marshal request body", err)
 		}
 		rdr = bytes.NewReader(b)
+	}
+
+	// Client-side rate limiting: preempt provider-side limits by pacing
+	// requests through the per-connector token bucket.
+	if err := c.Limit.Wait(ctx); err != nil {
+		return NewError(ErrUnknown, "rate limit wait: context cancelled", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rdr)

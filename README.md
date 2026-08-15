@@ -7,9 +7,12 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 3 (Bidirectional sync) — build in progress.** Salesforce ↔
-> SyncForge ↔ HubSpot with identity resolution, out-of-order protection, and
-> loop prevention. See [docs/architecture.md](docs/architecture.md).
+> **Status: Phase 4 (Reliability) — build in progress.** Bidirectional
+> synchronization plus durable retries with exponential backoff + jitter, a
+> dead-letter queue with operator replay, client-side rate limiting, and
+> resumable initial full-sync jobs. See
+> [docs/architecture.md](docs/architecture.md) and
+> [docs/failure-recovery.md](docs/failure-recovery.md).
 
 ---
 
@@ -61,8 +64,8 @@ idempotency, retries, conflicts, reconciliation, and tenant isolation.
 ### Services (separate processes only where it matters)
 
 - **api** — HTTP API + webhook gateway. Stays up while workers are backlogged.
-- **engine** — worker host (event processor, sync workers, retry, reconciliation
-  land in Phase 2+).
+- **engine** — worker host (event processor, sync workers, retry engine, sync
+  job runner, reconciliation land in Phase 2+).
 - **sim-salesforce / sim-hubspot** — realistic fake providers (they *are* the
   "external systems"): REST, cursor pagination, per-provider rate limits, signed
   webhooks, failure injection.
@@ -104,9 +107,43 @@ keyed by `(tenant_id, source, event_id)` — the unique constraint guarantees th
 gateway ingests each logical event exactly once (duplicates return "duplicate").
 The canonical sync event contract lives in `internal/events`.
 
-## 6. What Phase 3 delivers
+## 6. What Phase 4 delivers
 
-Bidirectional synchronization. Every apply now runs:
+Reliability on top of the bidirectional apply path (`internal/retry`,
+`internal/syncjob`, `internal/backoff`, `internal/connectors/ratelimit.go`).
+Full detail in [docs/failure-recovery.md](docs/failure-recovery.md).
+
+1. **Failure classification** — every connector error is classified
+   (`internal/connectors/classify.go`) as *transient* (network, 5xx, 429 → may
+   retry), *permanent* (`PERMANENT` custom errors, auth, schema errors → never
+   retried), or *rate-limited* (honor `Retry-After`). `ShouldRetry` decides the
+   path.
+2. **Durable retries** — a failed apply does not lose the event: the idempotency
+   claim is released, `source_events` is marked `failed`, and a `retry_queue`
+   row is written (`EnqueueRetry`, idempotent via a unique
+   `(tenant_id, event_id)` index). The retry engine (`internal/retry`) claims due
+   rows (`FOR UPDATE SKIP LOCKED` on the admin pool), re-applies via the same
+   idempotent worker, and re-queues with **exponential backoff + jitter**
+   (`internal/backoff`: `base × 2^(attempt-1)`, capped at max, ±30% jitter).
+   Success deletes the row and resolves any pending DLQ entry.
+3. **Dead-letter queue** — attempts exhaust (`MaxAttempts`, default 8) or the
+   error is permanent → the event is parked in `dead_letter` (`status='dlq'`)
+   with the error class and serialized canonical payload. Operators can
+   `GET /api/v1/dlq`, `POST /api/v1/dlq/{id}/retry` (replay) and
+   `POST /api/v1/dlq/{id}/discard` through the API; stale events can be
+   inspected via `GET /api/v1/sync-events`.
+4. **Client-side rate limiting** — token-bucket `Limiter` on the shared HTTP
+   client (Salesforce 100/min, HubSpot 50/min by default) so workers slow down
+   instead of hammering providers; callers can `Wait` before building requests.
+5. **Resumable initial full-sync** — `sync_jobs` keep a cursor + processed page
+   count, persisted every batch (`ClaimNextSyncJob` adopts jobs stale >60s).
+   On crash the runner resumes from the last committed cursor; records already
+   applied are skipped by worker idempotency, so the full sync is
+   **exactly-once-effect** end to end.
+
+### Phase 3 (bidirectional sync)
+
+Bidirectional synchronization. Every apply runs:
 
 1. **Identity resolution** — map the incoming provider record to a canonical
    entity by provider id, then by email (a HubSpot contact created
@@ -225,26 +262,30 @@ Tests that currently exist:
   write, not re-propagated); **out-of-order** (v3 then v2 → v2 dropped);
   **identity resolution by email** (independent HubSpot contact merges into the
   existing canonical instead of duplicating).
+- **Reliability (integration, in-process)**: provider outage is durable and
+  recovers exactly-once; worker crash releases its claim and redelivery stays
+  safe (no duplicates); schema errors go straight to DLQ and can be discarded;
+  retry exhaustion → DLQ → operator replay → resolved; full-sync job crashed
+  mid-page resumes from its committed cursor with exactly-once effect.
 
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 3)
+## 9. Known limitations (Phase 4)
 
 - Conflict *detection* is not yet built: a concurrent edit of the same field in
   both systems still silently applies (Phase 5 adds conflicts + resolution
   strategies; field provenance is tracked from now on).
 - Identity resolution is email-only and single-match; ambiguous or missing
   emails fall back to a new canonical record.
-- Failed destination writes are marked `failed`; the durable retry queue + DLQ
-  arrive in Phase 4.
+- Retries use fixed configured bounds (base/max/max-attempts); adaptive retry
+  honoring provider hints is limited to `Retry-After` shrinking, not dynamic
+  growth.
 - Tenant management is gated by a fixed bootstrap key until full RBAC (Phase 7).
 - Simulated providers keep state in memory (intentional: they are external
   systems; their durability isn't SyncForge's concern).
 
 ## 10. Next phases
 
-Phase 4 — reliability: durable retries with exponential backoff + jitter,
-failure classification, dead-letter queue + replay APIs, adaptive rate limiting.
-Then conflict resolution (Phase 5), reconciliation (Phase 6), RBAC, observability,
-failure injection, and benchmarking.
+Phase 5 — conflict detection + resolution strategies. Then reconciliation
+(Phase 6), RBAC (Phase 7), observability, failure injection, and benchmarking.

@@ -28,6 +28,11 @@ type Config struct {
 	SeedSFSSecret  string
 	SeedHubSecret  string
 
+	RetryBaseDelayMs int
+	RetryMaxDelayMs  int
+	RetryMaxAttempts int
+	SyncJobBatchSize int
+
 	ShutdownTimeout time.Duration
 }
 
@@ -50,6 +55,11 @@ func Load() Config {
 		SeedHubBaseURL: get("SYNCFORGE_SEED_HUBSPOT_URL", "http://localhost:9082"),
 		SeedSFSSecret:  get("SYNCFORGE_SEED_SALESFORCE_WEBHOOK_SECRET", "sfs-dev-secret"),
 		SeedHubSecret:  get("SYNCFORGE_SEED_HUBSPOT_WEBHOOK_SECRET", "sfh-dev-secret"),
+
+		RetryBaseDelayMs: getInt("SYNCFORGE_RETRY_BASE_DELAY_MS", 1000),
+		RetryMaxDelayMs:  getInt("SYNCFORGE_RETRY_MAX_DELAY_MS", 60000),
+		RetryMaxAttempts: getInt("SYNCFORGE_RETRY_MAX_ATTEMPTS", 8),
+		SyncJobBatchSize: getInt("SYNCFORGE_SYNC_JOB_BATCH_SIZE", 1000),
 
 		ShutdownTimeout: time.Duration(getInt("SYNCFORGE_SHUTDOWN_TIMEOUT_MS", 10000)) * time.Millisecond,
 	}

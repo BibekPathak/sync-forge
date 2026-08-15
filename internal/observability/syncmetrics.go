@@ -15,6 +15,8 @@ type SyncMetrics struct {
 	StaleEvents        metric.Int64Counter
 	LoopsPrevented     metric.Int64Counter
 	ProcessingDuration metric.Float64Histogram
+	RetryScheduled     metric.Int64Counter
+	DLQEvents          metric.Int64Counter
 }
 
 func NewSyncMetrics(meter metric.Meter) (*SyncMetrics, error) {
@@ -58,6 +60,16 @@ func NewSyncMetrics(meter metric.Meter) (*SyncMetrics, error) {
 	if err != nil {
 		return nil, err
 	}
+	retryScheduled, err := meter.Int64Counter("sync_retry_scheduled_total",
+		metric.WithDescription("Failures durably handed to the retry queue"))
+	if err != nil {
+		return nil, err
+	}
+	dlqEvents, err := meter.Int64Counter("sync_dlq_events_total",
+		metric.WithDescription("Events that exhausted retries or failed permanently and entered the DLQ"))
+	if err != nil {
+		return nil, err
+	}
 	return &SyncMetrics{
 		EventsTotal:        eventsTotal,
 		EventsSuccess:      eventsSuccess,
@@ -67,6 +79,8 @@ func NewSyncMetrics(meter metric.Meter) (*SyncMetrics, error) {
 		StaleEvents:        stale,
 		LoopsPrevented:     loops,
 		ProcessingDuration: duration,
+		RetryScheduled:     retryScheduled,
+		DLQEvents:          dlqEvents,
 	}, nil
 }
 

@@ -18,6 +18,8 @@ import (
 	"syncforge/internal/eventbus"
 	"syncforge/internal/ingestion"
 	"syncforge/internal/observability"
+	"syncforge/internal/retry"
+	"syncforge/internal/syncjob"
 	"syncforge/internal/syncworker"
 	"syncforge/migrations"
 )
@@ -78,12 +80,28 @@ func main() {
 	worker := syncworker.New(database, syncMetrics, logger)
 	processor := ingestion.New(database, bus, logger)
 
-	errCh := make(chan error, 2)
+	// Phase 4 reliability: durable retries (exponential backoff + DLQ) and the
+	// resumable initial-sync runner run alongside event ingestion.
+	retryEngine := retry.New(database, worker, syncMetrics, logger).
+		WithOptions(retry.Options{
+			BaseDelay:   time.Duration(cfg.RetryBaseDelayMs) * time.Millisecond,
+			MaxDelay:    time.Duration(cfg.RetryMaxDelayMs) * time.Millisecond,
+			MaxAttempts: cfg.RetryMaxAttempts,
+		})
+	syncJobs := syncjob.New(database, worker, logger)
+
+	errCh := make(chan error, 3)
 	go func() {
 		errCh <- processor.Run(ctx)
 	}()
 	go func() {
 		errCh <- bus.Subscribe(ctx, eventbus.TopicSyncEvents, cfg.KafkaGroupID, worker.Handle)
+	}()
+	go func() {
+		errCh <- retryEngine.Run(ctx)
+	}()
+	go func() {
+		errCh <- syncJobs.Run(ctx)
 	}()
 
 	httpSrv := &http.Server{

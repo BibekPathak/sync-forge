@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,22 +24,30 @@ import (
 	"syncforge/internal/eventbus"
 	"syncforge/internal/ingestion"
 	"syncforge/internal/observability"
+	"syncforge/internal/retry"
 	"syncforge/internal/simulator"
 	"syncforge/internal/store"
+	"syncforge/internal/syncjob"
 	"syncforge/internal/syncworker"
 )
 
 // pipelineHarness wires the real ingestion + sync worker around a memory bus
 // and two in-process provider simulators.
 type pipelineHarness struct {
-	db      *db.DB
-	bus     *eventbus.MemoryBus
-	api     *httptest.Server
-	sfSim   *httptest.Server
-	hubSim  *httptest.Server
-	acmeID  string
-	cancel  context.CancelFunc
-	workers []func() error
+	db          *db.DB
+	bus         *eventbus.MemoryBus
+	api         *httptest.Server
+	sfSim       *httptest.Server
+	hubSim      *httptest.Server
+	sfSrv       *simulator.Server
+	hubSrv      *simulator.Server
+	acmeID      string
+	cancel      context.CancelFunc
+	worker      *syncworker.Worker
+	retryEngine *retry.Engine
+	syncRunner  *syncjob.Runner
+	retryOnce   sync.Once
+	workers     []func() error
 }
 
 func newPipelineHarness(t *testing.T) *pipelineHarness {
@@ -97,8 +106,22 @@ func newPipelineHarness(t *testing.T) *pipelineHarness {
 		t.Fatal(err)
 	}
 
-	worker := syncworker.New(database, syncMetrics, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	worker := syncworker.New(database, syncMetrics, slog.New(slog.NewTextHandler(os.Stderr, nil))).
+		WithOptions(syncworker.Options{
+			RetryBaseDelay:   20 * time.Millisecond,
+			RetryMaxDelay:    500 * time.Millisecond,
+			RetryMaxAttempts: 3,
+		})
 	processor := ingestion.New(database, bus, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	retryEngine := retry.New(database, worker, syncMetrics, slog.New(slog.NewTextHandler(os.Stderr, nil))).
+		WithOptions(retry.Options{
+			BaseDelay:   20 * time.Millisecond,
+			MaxDelay:    500 * time.Millisecond,
+			MaxAttempts: 3,
+			PollEvery:   10 * time.Millisecond,
+			BatchSize:   100,
+		})
+	syncRunner := syncjob.New(database, worker, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	// Start worker consumer + ingestion processor.
 	workerErr := make(chan error, 1)
@@ -119,15 +142,46 @@ func newPipelineHarness(t *testing.T) *pipelineHarness {
 	hubSrv.SetWebhook(apiSim.URL+"/webhooks/hubspot/acme", "sfh-dev-secret")
 
 	return &pipelineHarness{
-		db:      database,
-		bus:     bus,
-		api:     apiSim,
-		sfSim:   sfSim,
-		hubSim:  hubSim,
-		acmeID:  acme.ID,
-		cancel:  cancel,
-		workers: []func() error{func() error { return <-workerErr }, func() error { return <-ingestErr }},
+		db:          database,
+		bus:         bus,
+		api:         apiSim,
+		sfSim:       sfSim,
+		hubSim:      hubSim,
+		sfSrv:       sfSrv,
+		hubSrv:      hubSrv,
+		acmeID:      acme.ID,
+		cancel:      cancel,
+		worker:      worker,
+		retryEngine: retryEngine,
+		syncRunner:  syncRunner,
+		workers:     []func() error{func() error { return <-workerErr }, func() error { return <-ingestErr }},
 	}
+}
+
+// startRetry launches the retry engine in the background (idempotent).
+func (h *pipelineHarness) startRetry() {
+	h.retryOnce.Do(func() {
+		go func() {
+			_ = h.retryEngine.Run(context.Background())
+		}()
+		// Give the poll loop a moment to come up.
+		time.Sleep(20 * time.Millisecond)
+	})
+}
+
+// drainRetries drives the retry engine until until() is satisfied or the
+// timeout elapses. Deterministic alternative to the background loop.
+func (h *pipelineHarness) drainRetries(t *testing.T, timeout time.Duration, msg string, until func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if until() {
+			return
+		}
+		h.retryEngine.Drain(context.Background())
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for: %s", msg)
 }
 
 // hubContacts returns all records currently in the HubSpot simulator.

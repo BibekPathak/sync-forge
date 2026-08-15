@@ -27,6 +27,22 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.Handle("POST /api/v1/connections", s.requireAPIKey(http.HandlerFunc(s.handleCreateConnection)))
 	mux.Handle("GET /api/v1/connections/{id}", s.requireAPIKey(http.HandlerFunc(s.handleGetConnection)))
 
+	// event inspection
+	mux.Handle("GET /api/v1/sync-events", s.requireAPIKey(http.HandlerFunc(s.handleListSyncEvents)))
+	mux.Handle("GET /api/v1/sync-events/{id}", s.requireAPIKey(http.HandlerFunc(s.handleGetSyncEvent)))
+
+	// synchronization jobs (initial full sync, resumable)
+	mux.Handle("POST /api/v1/sync-jobs", s.requireAPIKey(http.HandlerFunc(s.handleCreateSyncJob)))
+	mux.Handle("GET /api/v1/sync-jobs", s.requireAPIKey(http.HandlerFunc(s.handleListSyncJobs)))
+	mux.Handle("GET /api/v1/sync-jobs/{id}", s.requireAPIKey(http.HandlerFunc(s.handleGetSyncJob)))
+	mux.Handle("POST /api/v1/sync-jobs/{id}/run", s.requireAPIKey(http.HandlerFunc(s.handleRerunSyncJob)))
+
+	// dead-letter queue (inspect, retry, discard)
+	mux.Handle("GET /api/v1/dlq", s.requireAPIKey(http.HandlerFunc(s.handleListDLQ)))
+	mux.Handle("GET /api/v1/dlq/{id}", s.requireAPIKey(http.HandlerFunc(s.handleGetDLQ)))
+	mux.Handle("POST /api/v1/dlq/{id}/retry", s.requireAPIKey(http.HandlerFunc(s.handleDLQRetry)))
+	mux.Handle("POST /api/v1/dlq/{id}/discard", s.requireAPIKey(http.HandlerFunc(s.handleDLQDiscard)))
+
 	// webhook gateway (HMAC-signed)
 	mux.HandleFunc("POST /webhooks/{provider}/{tenant_slug}", s.handleWebhook)
 

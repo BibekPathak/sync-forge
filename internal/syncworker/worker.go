@@ -9,6 +9,7 @@ import (
 
 	"go.opentelemetry.io/otel/metric"
 
+	"syncforge/internal/backoff"
 	"syncforge/internal/connectors"
 	"syncforge/internal/connectors/registry"
 	"syncforge/internal/db"
@@ -18,30 +19,78 @@ import (
 	"syncforge/internal/store"
 )
 
+// Options tunes worker reliability behavior.
+type Options struct {
+	// RetryBaseDelay/RetryMaxDelay shape the exponential backoff used when a
+	// failure is first handed to the durable retry machinery.
+	RetryBaseDelay time.Duration
+	RetryMaxDelay  time.Duration
+	// RetryMaxAttempts caps total processing attempts before an event is
+	// escalated to the dead-letter queue.
+	RetryMaxAttempts int
+}
+
 // Worker consumes canonical sync events, applies them to destination systems,
 // and persists canonical state. Phase 3 adds identity resolution, per-source
 // version checks (out-of-order protection) and fingerprint-based loop
-// prevention for bidirectional synchronization.
+// prevention for bidirectional synchronization. Phase 4 routes failures to the
+// durable retry queue / dead-letter queue instead of relying on broker
+// redelivery.
 type Worker struct {
 	db      *db.DB
 	log     *slog.Logger
 	metrics *observability.SyncMetrics
+	opts    Options
 }
 
 func New(database *db.DB, metrics *observability.SyncMetrics, log *slog.Logger) *Worker {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Worker{db: database, metrics: metrics, log: log}
+	return &Worker{
+		db:      database,
+		metrics: metrics,
+		log:     log,
+		opts: Options{
+			RetryBaseDelay:   1 * time.Second,
+			RetryMaxDelay:    60 * time.Second,
+			RetryMaxAttempts: 8,
+		},
+	}
 }
 
-// Handle implements eventbus.Handler.
+// WithOptions overrides worker reliability knobs.
+func (w *Worker) WithOptions(o Options) *Worker {
+	if o.RetryBaseDelay > 0 {
+		w.opts.RetryBaseDelay = o.RetryBaseDelay
+	}
+	if o.RetryMaxDelay > 0 {
+		w.opts.RetryMaxDelay = o.RetryMaxDelay
+	}
+	if o.RetryMaxAttempts > 0 {
+		w.opts.RetryMaxAttempts = o.RetryMaxAttempts
+	}
+	return w
+}
+
+// Handle implements eventbus.Handler. A processing failure is acknowledged
+// (nil) only after it has been made durable in the retry queue or DLQ; this
+// keeps broker semantics at at-least-once while the durable machinery owns the
+// actual retries with backoff.
 func (w *Worker) Handle(ctx context.Context, _ string, value []byte) error {
 	var ev events.Event
 	if err := json.Unmarshal(value, &ev); err != nil {
 		return err
 	}
-	return w.Process(ctx, &ev)
+	if err := w.Process(ctx, &ev); err != nil {
+		if err := w.dispatchFailure(ctx, &ev, err); err != nil {
+			// Failure could not be made durable: return the error so the
+			// transport redelivers the message later.
+			return err
+		}
+		return nil
+	}
+	return nil
 }
 
 // Process applies a single canonical event. It is idempotent: claiming the
@@ -121,6 +170,67 @@ func (w *Worker) fail(ctx context.Context, ev *events.Event, cause error) {
 	}
 	w.log.Error("event failed",
 		"event_id", ev.EventID, "source", ev.Source, "entity", ev.EntityID, "error", cause)
+}
+
+// dispatchFailure makes a failed event durable: transient/retryable failures
+// are scheduled on the retry queue with exponential backoff; permanent
+// failures (schema, auth) go straight to the dead-letter queue. Returns an
+// error only if the handoff itself could not be persisted.
+func (w *Worker) dispatchFailure(ctx context.Context, ev *events.Event, cause error) error {
+	kind, retryAfter := connectors.Classify(cause)
+	if !connectors.ShouldRetry(kind) {
+		return w.deadLetter(ctx, ev, cause.Error(), kind.String())
+	}
+
+	delay := backoff.ComputeDelay(1, w.opts.RetryBaseDelay, w.opts.RetryMaxDelay)
+	if retryAfter > 0 && retryAfter < delay {
+		delay = retryAfter
+	}
+	if delay > w.opts.RetryMaxDelay {
+		delay = w.opts.RetryMaxDelay
+	}
+
+	state, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	if _, err := store.EnqueueRetry(ctx, w.db.App, store.RetryEntry{
+		TenantID:    ev.TenantID,
+		EventID:     ev.EventID,
+		MaxAttempts: w.opts.RetryMaxAttempts,
+		LastError:   cause.Error(),
+		ErrorClass:  kind.String(),
+		State:       state,
+	}, delay); err != nil {
+		return err
+	}
+	w.metrics.RetryScheduled.Add(ctx, 1)
+	w.log.Info("scheduled retry", "event_id", ev.EventID, "source", ev.Source, "delay", delay, "error_class", kind.String())
+	return nil
+}
+
+// deadLetter parks a permanently-failed event for operator inspection.
+func (w *Worker) deadLetter(ctx context.Context, ev *events.Event, reason, errorClass string) error {
+	state, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	if _, err := store.InsertDeadLetter(ctx, w.db.App, store.DeadLetter{
+		TenantID:   ev.TenantID,
+		EventID:    ev.EventID,
+		Reason:     reason,
+		ErrorClass: errorClass,
+		Payload:    state,
+	}); err != nil {
+		return err
+	}
+	if err := store.SetSourceEventStatusTo(ctx, w.db.App, ev.TenantID, ev.EventID, "dlq"); err != nil {
+		w.log.Warn("mark event dlq", "event_id", ev.EventID, "error", err)
+	}
+	w.metrics.DLQEvents.Add(ctx, 1)
+	w.log.Error("event dead-lettered",
+		"event_id", ev.EventID, "source", ev.Source, "error_class", errorClass, "reason", reason)
+	return nil
 }
 
 // canonicalEntityType resolves the source adapter and returns the canonical
