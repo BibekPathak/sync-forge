@@ -17,6 +17,8 @@ type SyncMetrics struct {
 	ProcessingDuration metric.Float64Histogram
 	RetryScheduled     metric.Int64Counter
 	DLQEvents          metric.Int64Counter
+	ConflictsDetected  metric.Int64Counter
+	ConflictsResolved  metric.Int64Counter
 }
 
 func NewSyncMetrics(meter metric.Meter) (*SyncMetrics, error) {
@@ -70,6 +72,16 @@ func NewSyncMetrics(meter metric.Meter) (*SyncMetrics, error) {
 	if err != nil {
 		return nil, err
 	}
+	conflictsDetected, err := meter.Int64Counter("sync_conflicts_detected_total",
+		metric.WithDescription("Concurrent field edits detected across sources"))
+	if err != nil {
+		return nil, err
+	}
+	conflictsResolved, err := meter.Int64Counter("sync_conflicts_resolved_total",
+		metric.WithDescription("Conflicts resolved (auto strategy or operator)"))
+	if err != nil {
+		return nil, err
+	}
 	return &SyncMetrics{
 		EventsTotal:        eventsTotal,
 		EventsSuccess:      eventsSuccess,
@@ -81,6 +93,8 @@ func NewSyncMetrics(meter metric.Meter) (*SyncMetrics, error) {
 		ProcessingDuration: duration,
 		RetryScheduled:     retryScheduled,
 		DLQEvents:          dlqEvents,
+		ConflictsDetected:  conflictsDetected,
+		ConflictsResolved:  conflictsResolved,
 	}, nil
 }
 

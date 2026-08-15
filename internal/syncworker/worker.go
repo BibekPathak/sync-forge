@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"syncforge/internal/backoff"
+	"syncforge/internal/conflict"
 	"syncforge/internal/connectors"
 	"syncforge/internal/connectors/registry"
 	"syncforge/internal/db"
@@ -248,13 +249,22 @@ func (w *Worker) canonicalEntityType(ctx context.Context, ev *events.Event) (str
 }
 
 // applyUpsert handles created/updated events: identity resolution, version
-// check, loop-prevention, then propagation to every configured destination.
+// check, loop-prevention, conflict detection + resolution, then propagation to
+// every configured destination.
 func (w *Worker) applyUpsert(ctx context.Context, ev *events.Event, entityType string, policies []store.SyncPolicy) error {
 	tenant := ev.TenantID
 	fields, ok := ev.Payload["fields"].(map[string]any)
 	if !ok || len(fields) == 0 {
 		return connectors.NewError(connectors.ErrSchema, "event payload missing fields", nil)
 	}
+
+	// An operator-forced resolution applies the chosen side directly: no
+	// ordering, echo, conflict, or provider-normalization checks — the
+	// operator has decided the state.
+	if ev.Provenance.ResolvedConflictID != "" {
+		return w.applyResolution(ctx, ev, entityType, policies, fields)
+	}
+
 	srcConn, err := store.GetConnectionByProvider(ctx, w.db.App, tenant, ev.Source)
 	if err != nil {
 		return err
@@ -302,7 +312,50 @@ func (w *Worker) applyUpsert(ctx context.Context, ev *events.Event, entityType s
 		return nil
 	}
 
-	// 4. Propagate to every destination.
+	// 4. Conflict detection + resolution: an incoming event that changes a
+	//    field another source last wrote is a concurrent edit. The active
+	//    policy strategy decides whether we auto-resolve (and keep an audit
+	//    row) or park it for a human.
+	strategy := conflict.StrategyLastWriteWins
+	priority := 100
+	if len(policies) > 0 {
+		if p := policies[0].ConflictStrategy; p != "" {
+			strategy = p
+		}
+		priority = policies[0].SourcePriority
+	}
+
+	merged, mergedFP, detected, manual := conflict.Merge(
+		strategy,
+		canonical.Fields,
+		conflict.FromMap(canonical.FieldProvenance),
+		cust.Fields(),
+		ev.Source, ev.SourceVersion, ev.OccurredAt,
+		priority,
+	)
+	if manual {
+		// Manual strategy: do not apply. Park a CONFLICT_PENDING for the
+		// operator to resolve; the event is considered handled (no retry).
+		w.metrics.ConflictsDetected.Add(ctx, 1)
+		w.recordConflict(ctx, ev, entityType, canonical, cust.Fields(), detected, store.ConflictPending, strategy)
+		w.log.Warn("conflict parked for manual resolution",
+			"event_id", ev.EventID, "entity", canonical.EntityID,
+			"fields", len(detected), "strategy", strategy)
+		return nil
+	}
+	if len(detected) > 0 {
+		w.metrics.ConflictsDetected.Add(ctx, 1)
+		w.metrics.ConflictsResolved.Add(ctx, 1)
+		w.recordConflict(ctx, ev, entityType, canonical, cust.Fields(), detected, store.ConflictAutoResolved, strategy)
+		w.log.Warn("conflict auto-resolved",
+			"event_id", ev.EventID, "entity", canonical.EntityID,
+			"fields", len(detected), "strategy", strategy)
+	}
+	// Propagate the resolved (or plain) field set, and persist its ownership.
+	cust.FromFields(merged)
+	canonical.FieldProvenance = mergedFP.ToMap()
+
+	// 5. Propagate to every destination.
 	for _, policy := range policies {
 		dstConn, err := store.GetConnectionByProvider(ctx, w.db.App, tenant, policy.Destination)
 		if err != nil {
@@ -343,7 +396,7 @@ func (w *Worker) applyUpsert(ctx context.Context, ev *events.Event, entityType s
 		}
 	}
 
-	// 5. Persist canonical state.
+	// 6. Persist canonical state.
 	canonical.Fields = cust.Fields()
 	canonical.SourceVersions[ev.Source] = ev.SourceVersion
 	canonical.Version++
@@ -458,4 +511,128 @@ func (w *Worker) isEcho(ctx context.Context, tenant, entityType, entityID, sourc
 		return false, err
 	}
 	return outbound.Fingerprint == cust.Fingerprint(), nil
+}
+
+// recordConflict durably persists a detected conflict (either parked for a
+// manual resolution or recorded as an audit trail for auto-resolutions). Both
+// sides' canonical field snapshots are stored so an operator can inspect and
+// pick a winner. Idempotent per the (tenant, entity, source pair, versions)
+// key.
+func (w *Worker) recordConflict(ctx context.Context, ev *events.Event, entityType string, canonical store.CanonicalRecord, incomingFields map[string]any, detected []conflict.FieldConflict, status, strategy string) error {
+	if len(detected) == 0 {
+		return nil
+	}
+	c := detected[0]
+	payloadA, err := json.Marshal(canonical.Fields)
+	if err != nil {
+		return err
+	}
+	payloadB, err := json.Marshal(incomingFields)
+	if err != nil {
+		return err
+	}
+	_, err = store.InsertConflict(ctx, w.db.App, store.ConflictRecord{
+		TenantID:           ev.TenantID,
+		EntityType:         entityType,
+		EntityID:           canonical.EntityID,
+		SourceA:            c.SourceA,
+		VersionA:           c.VersionA,
+		PayloadA:           payloadA,
+		SourceB:            c.SourceB,
+		VersionB:           c.VersionB,
+		PayloadB:           payloadB,
+		Status:             status,
+		ResolutionStrategy: strategy,
+	})
+	if err != nil {
+		w.log.Warn("record conflict", "event_id", ev.EventID, "entity", canonical.EntityID, "error", err)
+	}
+	return err
+}
+
+// applyResolution applies an operator-chosen conflict resolution: the chosen
+// side's canonical fields are written to every destination, the canonical
+// record and its provenance are updated, and the conflict is marked resolved.
+// The payload is already canonical fields (not provider-native), so no source
+// adapter normalization occurs.
+func (w *Worker) applyResolution(ctx context.Context, ev *events.Event, entityType string, policies []store.SyncPolicy, fields map[string]any) error {
+	tenant := ev.TenantID
+	canonical, err := store.GetCanonical(ctx, w.db.App, tenant, entityType, ev.EntityID)
+	if errors.Is(err, store.ErrNotFound) {
+		w.log.Warn("resolution ignored: canonical record gone", "entity", ev.EntityID, "conflict", ev.Provenance.ResolvedConflictID)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	cust := &model.Customer{TenantID: tenant, EntityID: canonical.EntityID}
+	cust.FromFields(fields)
+
+	// Write the winning state to every configured destination.
+	for _, policy := range policies {
+		dstConn, err := store.GetConnectionByProvider(ctx, w.db.App, tenant, policy.Destination)
+		if err != nil {
+			return err
+		}
+		dstAdapter, err := registry.New(dstConn.Provider, dstConn.BaseURL, "")
+		if err != nil {
+			return err
+		}
+		dstRec, err := dstAdapter.Denormalize(cust)
+		if err != nil {
+			return err
+		}
+		dstID := canonical.ProviderIDs[policy.Destination]
+		if dstID == "" {
+			created, err := dstAdapter.Create(ctx, dstRec)
+			if err != nil {
+				return err
+			}
+			canonical.ProviderIDs[policy.Destination] = created.ID
+		} else if _, err := dstAdapter.Update(ctx, dstID, dstRec); err != nil {
+			return err
+		}
+		w.metrics.DestinationWrites.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(policy.Destination)))
+		if err := store.UpsertOutboundWrite(ctx, w.db.App, store.OutboundWrite{
+			TenantID:     tenant,
+			EntityType:   entityType,
+			EntityID:     canonical.EntityID,
+			TargetSource: policy.Destination,
+			Fingerprint:  cust.Fingerprint(),
+		}); err != nil {
+			return err
+		}
+	}
+
+	// The winning source now owns every field it carried forward; other fields
+	// keep their existing writer.
+	fp := conflict.FromMap(canonical.FieldProvenance)
+	for f := range fields {
+		prio := 100
+		if existing, ok := fp[f]; ok {
+			prio = existing.Priority
+		}
+		fp[f] = conflict.Provenance{Source: ev.Source, Version: ev.SourceVersion, OccurredAt: ev.OccurredAt, Priority: prio}
+	}
+
+	canonical.Fields = cust.Fields()
+	canonical.FieldProvenance = fp.ToMap()
+	canonical.SourceVersions[ev.Source] = ev.SourceVersion
+	canonical.Version++
+	canonical.OriginSource = ev.Source
+	canonical.OriginEventID = ev.EventID
+	canonical.Tombstone = false
+	if _, err := store.UpsertCanonical(ctx, w.db.App, canonical); err != nil {
+		return err
+	}
+
+	if err := store.SetConflictStatus(ctx, w.db.App, tenant, ev.Provenance.ResolvedConflictID, store.ConflictResolved, "manual", "operator"); err != nil {
+		w.log.Warn("mark conflict resolved", "conflict", ev.Provenance.ResolvedConflictID, "error", err)
+	}
+	w.metrics.ConflictsResolved.Add(ctx, 1)
+	w.log.Info("conflict resolved by operator",
+		"conflict", ev.Provenance.ResolvedConflictID, "entity", canonical.EntityID,
+		"winner", ev.Source, "fields", len(fields))
+	return nil
 }

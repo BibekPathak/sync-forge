@@ -43,6 +43,12 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.Handle("POST /api/v1/dlq/{id}/retry", s.requireAPIKey(http.HandlerFunc(s.handleDLQRetry)))
 	mux.Handle("POST /api/v1/dlq/{id}/discard", s.requireAPIKey(http.HandlerFunc(s.handleDLQDiscard)))
 
+	// conflicts (inspect, resolve, dismiss)
+	mux.Handle("GET /api/v1/conflicts", s.requireAPIKey(http.HandlerFunc(s.handleListConflicts)))
+	mux.Handle("GET /api/v1/conflicts/{id}", s.requireAPIKey(http.HandlerFunc(s.handleGetConflict)))
+	mux.Handle("POST /api/v1/conflicts/{id}/resolve", s.requireAPIKey(http.HandlerFunc(s.handleResolveConflict)))
+	mux.Handle("POST /api/v1/conflicts/{id}/dismiss", s.requireAPIKey(http.HandlerFunc(s.handleDismissConflict)))
+
 	// webhook gateway (HMAC-signed)
 	mux.HandleFunc("POST /webhooks/{provider}/{tenant_slug}", s.handleWebhook)
 

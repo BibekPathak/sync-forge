@@ -17,6 +17,11 @@ type Provenance struct {
 	OriginSource    string `json:"origin_source,omitempty"`
 	OriginEventID   string `json:"origin_event_id,omitempty"`
 	SyncOperationID string `json:"sync_operation_id,omitempty"`
+
+	// ResolvedConflictID marks a synthetic event produced by an operator
+	// resolving a conflict: the worker applies the chosen side without
+	// re-running conflict detection (or ordering/loop checks) on it.
+	ResolvedConflictID string `json:"resolved_conflict_id,omitempty"`
 }
 
 // Event is the canonical synchronization event. Events are immutable: once

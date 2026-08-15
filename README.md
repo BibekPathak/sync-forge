@@ -141,6 +141,34 @@ Full detail in [docs/failure-recovery.md](docs/failure-recovery.md).
    applied are skipped by worker idempotency, so the full sync is
    **exactly-once-effect** end to end.
 
+### Phase 5 (conflict detection + resolution)
+
+Concurrent edits of the same field in two systems no longer silently overwrite
+each other. Every apply records **field provenance** (which source last wrote
+each field) into `canonical_records.field_provenance`; when an incoming event
+changes a field another source last wrote, the worker detects a conflict
+(`internal/conflict`, a pure, unit-tested leaf package) and applies the policy's
+`conflict_strategy`:
+
+1. **last_write_wins** — the field adopts the value with the later occurrence
+   time (ties go to the higher-priority source).
+2. **source_priority** — the field keeps the value from the higher-priority
+   source (lower `source_priority` number), however it was edited last.
+3. **field_merge** — per-field winner + merge; non-conflicting fields keep
+   their own writers (used by the seeded Acme policies).
+4. **manual** — nothing is auto-applied; the conflict is parked as
+   `CONFLICT_PENDING` for an operator.
+
+Every conflict is durably recorded in `conflicts` (idempotent per
+`(tenant, entity, source pair, versions)`; indexed for dedupe + listing) with
+both sides' canonical snapshots, so even auto-resolutions leave an **audit
+trail** (`AUTO_RESOLVED`). `manual` conflicts are applied only when an operator
+resolves them through the API (`POST /api/v1/conflicts/{id}/resolve
+{"side":"a"|"b"}` or `/dismiss`); resolution re-publishes the chosen side as a
+durable synthetic event through the worker (`Provenance.ResolvedConflictID`),
+reusing idempotency + loop-prevention so the fix is exactly-once. Metrics:
+`sync_conflicts_detected_total` / `sync_conflicts_resolved_total`.
+
 ### Phase 3 (bidirectional sync)
 
 Bidirectional synchronization. Every apply runs:
@@ -267,15 +295,17 @@ Tests that currently exist:
   safe (no duplicates); schema errors go straight to DLQ and can be discarded;
   retry exhaustion → DLQ → operator replay → resolved; full-sync job crashed
   mid-page resumes from its committed cursor with exactly-once effect.
+- **Conflicts (integration, in-process)**: manual strategy parks a concurrent
+  HubSpot edit as `CONFLICT_PENDING` (no destination mutation), the API resolve
+  applies the chosen side exactly-once; `field_merge` auto-resolves a concurrent
+  edit (winner by occurrence time), propagates the merged value, keeps an
+  `AUTO_RESOLVED` audit row and records field provenance for the winning writer.
 
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 4)
+## 9. Known limitations (Phase 5)
 
-- Conflict *detection* is not yet built: a concurrent edit of the same field in
-  both systems still silently applies (Phase 5 adds conflicts + resolution
-  strategies; field provenance is tracked from now on).
 - Identity resolution is email-only and single-match; ambiguous or missing
   emails fall back to a new canonical record.
 - Retries use fixed configured bounds (base/max/max-attempts); adaptive retry
@@ -287,5 +317,5 @@ Tests that currently exist:
 
 ## 10. Next phases
 
-Phase 5 — conflict detection + resolution strategies. Then reconciliation
-(Phase 6), RBAC (Phase 7), observability, failure injection, and benchmarking.
+Reconciliation (Phase 6), RBAC (Phase 7), observability, failure injection, and
+benchmarking.

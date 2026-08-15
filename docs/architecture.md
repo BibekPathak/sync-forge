@@ -5,9 +5,10 @@ as it exists today and marks where later phases extend it.
 
 ## Status
 
-Phase 3 (Bidirectional sync) implemented: Salesforce ↔ SyncForge ↔ HubSpot with
-identity resolution, out-of-order protection, and fingerprint-based loop
-prevention. Phases 4–10 build on this structure.
+Phase 5 (Conflict detection + resolution) implemented: concurrent cross-source
+edits are detected via field provenance and resolved by policy
+(`last_write_wins` / `source_priority` / `field_merge` / `manual`), with a
+durable audit trail and an operator API. Phases 6–10 build on this structure.
 
 ## Process model
 
@@ -34,8 +35,13 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
         ├─ resolve policy + source/destination connections
         ├─ identity resolution (provider id → email)
         ├─ version check (drop out-of-order) → loop check (drop own echoes)
+        ├─ conflict detect + resolve (field provenance vs incoming)
+        │    └─ manual → park CONFLICT_PENDING; auto → merge + AUTO_RESOLVED audit
         ├─ normalize → canonical → denormalize → write create/update/delete
         └─ upsert canonical_records + outbound_writes fingerprint
+        └─ operator resolve (POST /conflicts/{id}/resolve) → synthetic
+             resolution event (ResolvedConflictID marker) → retry queue →
+             worker applies the chosen side exactly-once
 ```
 
 ### Consistency model
@@ -53,6 +59,13 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   written to each destination. An incoming event that normalizes to the same
   fingerprint is SyncForge's own echo and is dropped. Deletes are guarded by the
   canonical tombstone (a tombstoned entity's delete events are no-ops).
+- **Conflicts**: every apply stores field provenance (last writer per field) in
+  `canonical_records.field_provenance`. An incoming event that changes a field
+  another source last wrote is a concurrent edit → detected (`internal/conflict`)
+  and resolved per the policy's `conflict_strategy`. Auto strategies merge
+  transparently (with an `AUTO_RESOLVED` audit row); `manual` parks the conflict
+  until an operator resolves it. All conflicts are durable + idempotent
+  (`conflicts` table, unique on the source/version pair).
 - **Identity**: provider id lookup first; email fallback links independently
   created records to the same canonical entity.
 - **Residual window**: a crash between claiming and persisting the canonical
@@ -77,13 +90,18 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   offset commit) and in-memory transport for tests.
 - `internal/ingestion` — processor that drains `source_events` → topic.
 - `internal/syncworker` — idempotent bidirectional apply: identity resolution,
-  version checks, echo detection, propagation, canonical persistence.
+  version checks, echo detection, conflict detection/resolution (including
+  operator resolution events via `Provenance.ResolvedConflictID`), propagation,
+  canonical persistence.
+- `internal/conflict` — pure leaf package for field-level conflict detection and
+  strategy resolution (`last_write_wins`, `source_priority`, `field_merge`,
+  `manual`); unit-tested in isolation.
 - `internal/db` — pgx pools (app/engine), embedded migrations, and the
   `WithTenant` helper that scopes every query to a tenant via
   `SET LOCAL app.tenant_id`.
 - `internal/store` — data-access layer: tenants, connections, api keys,
   source events, processed events, canonical records, sync policies,
-  outbound writes.
+  outbound writes, conflicts.
 - `internal/api` — HTTP handlers, auth middleware (API keys + bootstrap),
   webhook gateway.
 - `internal/events` — immutable canonical event contract + partition key.
