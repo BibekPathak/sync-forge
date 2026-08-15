@@ -8,7 +8,13 @@ as it exists today and marks where later phases extend it.
 Phase 5 (Conflict detection + resolution) implemented: concurrent cross-source
 edits are detected via field provenance and resolved by policy
 (`last_write_wins` / `source_priority` / `field_merge` / `manual`), with a
-durable audit trail and an operator API. Phases 6–10 build on this structure.
+durable audit trail and an operator API.
+
+Phase 6 (Reconciliation) implemented: resumable sweeps classify every provider
+record against the canonical model (drift / missed / deleted / missing) and
+repair or park it. `auto` runs fix divergences inline (canonical wins by
+default); `manual` runs park findings for operator approval via the API.
+Phases 7–10 build on this structure.
 
 ## Process model
 
@@ -39,9 +45,18 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
         │    └─ manual → park CONFLICT_PENDING; auto → merge + AUTO_RESOLVED audit
         ├─ normalize → canonical → denormalize → write create/update/delete
         └─ upsert canonical_records + outbound_writes fingerprint
-        └─ operator resolve (POST /conflicts/{id}/resolve) → synthetic
+         └─ operator resolve (POST /conflicts/{id}/resolve) → synthetic
              resolution event (ResolvedConflictID marker) → retry queue →
              worker applies the chosen side exactly-once
+        └─ reconciliation (Phase 6, sync_jobs type='reconcile'):
+             claim reconcile job → sweep provider List (cursor checkpointed)
+             → classify (drift/missed/deleted/missing) → record finding
+             (idempotent per run+kind+provider id)
+             ├─ auto: repair inline via deterministic reconcile event
+             │    (ReconcileFindingID marker) → worker applies direction
+             │    (push_canonical / adopt_provider / delete) exactly-once
+             └─ manual: park finding (pending) → operator
+                  POST /reconciliations/{id}/findings/{fid}/apply|dismiss
 ```
 
 ### Consistency model
@@ -68,6 +83,16 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   (`conflicts` table, unique on the source/version pair).
 - **Identity**: provider id lookup first; email fallback links independently
   created records to the same canonical entity.
+- **Reconciliation**: reconcile sweeps re-derive truth from the provider's live
+  records. Canonical wins for drift (default `push_canonical`); a record the
+  provider lost (`missing`) is only re-created when the tenant's delete policy
+  does not treat external deletions as authoritative (`ignore` /
+  `tombstone_only`); a tombstoned canonical that still has a live provider
+  record is deleted there only when deletes propagate; provider records we
+  never ingested (`missed`) are adopted and propagated. All repairs run through
+  the worker with deterministic event ids (exactly-once) and record outbound
+  fingerprints so their own echoes are dropped. `manual` runs park findings for
+  operator apply/dismiss.
 - **Residual window**: a crash between claiming and persisting the canonical
   record can leave a claimed event that is skipped on redelivery; drift is
   repaired by reconciliation (Phase 6). This is the documented tradeoff for
@@ -92,7 +117,12 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
 - `internal/syncworker` — idempotent bidirectional apply: identity resolution,
   version checks, echo detection, conflict detection/resolution (including
   operator resolution events via `Provenance.ResolvedConflictID`), propagation,
-  canonical persistence.
+  canonical persistence, and reconcile repair application (via
+  `Provenance.ReconcileFindingID`).
+- `internal/reconcile` — Phase 6 engine: classifies provider records against
+  the canonical model, records findings, and repairs divergences in auto mode
+  (deterministic reconcile events through the worker) or parks them for the
+  operator API. Classification is a pure, unit-tested leaf.
 - `internal/conflict` — pure leaf package for field-level conflict detection and
   strategy resolution (`last_write_wins`, `source_priority`, `field_merge`,
   `manual`); unit-tested in isolation.
@@ -101,7 +131,7 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   `SET LOCAL app.tenant_id`.
 - `internal/store` — data-access layer: tenants, connections, api keys,
   source events, processed events, canonical records, sync policies,
-  outbound writes, conflicts.
+  outbound writes, conflicts, reconciliation runs and findings.
 - `internal/api` — HTTP handlers, auth middleware (API keys + bootstrap),
   webhook gateway.
 - `internal/events` — immutable canonical event contract + partition key.

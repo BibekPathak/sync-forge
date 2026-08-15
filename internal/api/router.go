@@ -49,6 +49,14 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.Handle("POST /api/v1/conflicts/{id}/resolve", s.requireAPIKey(http.HandlerFunc(s.handleResolveConflict)))
 	mux.Handle("POST /api/v1/conflicts/{id}/dismiss", s.requireAPIKey(http.HandlerFunc(s.handleDismissConflict)))
 
+	// reconciliation (run sweeps, review findings, apply/dismiss repairs)
+	mux.Handle("POST /api/v1/reconciliations", s.requireAPIKey(http.HandlerFunc(s.handleCreateReconciliation)))
+	mux.Handle("GET /api/v1/reconciliations", s.requireAPIKey(http.HandlerFunc(s.handleListReconciliations)))
+	mux.Handle("GET /api/v1/reconciliations/{id}", s.requireAPIKey(http.HandlerFunc(s.handleGetReconciliation)))
+	mux.Handle("GET /api/v1/reconciliations/{id}/findings", s.requireAPIKey(http.HandlerFunc(s.handleListReconcileFindings)))
+	mux.Handle("POST /api/v1/reconciliations/{id}/findings/{findingId}/apply", s.requireAPIKey(http.HandlerFunc(s.handleApplyFinding)))
+	mux.Handle("POST /api/v1/reconciliations/{id}/findings/{findingId}/dismiss", s.requireAPIKey(http.HandlerFunc(s.handleDismissFinding)))
+
 	// webhook gateway (HMAC-signed)
 	mux.HandleFunc("POST /webhooks/{provider}/{tenant_slug}", s.handleWebhook)
 

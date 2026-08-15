@@ -18,6 +18,7 @@ import (
 	"syncforge/internal/eventbus"
 	"syncforge/internal/ingestion"
 	"syncforge/internal/observability"
+	"syncforge/internal/reconcile"
 	"syncforge/internal/retry"
 	"syncforge/internal/syncjob"
 	"syncforge/internal/syncworker"
@@ -89,6 +90,8 @@ func main() {
 			MaxAttempts: cfg.RetryMaxAttempts,
 		})
 	syncJobs := syncjob.New(database, worker, logger)
+	reconciler := reconcile.New(database, worker, syncMetrics, logger)
+	syncJobs.WithReconciler(reconciler)
 
 	errCh := make(chan error, 3)
 	go func() {

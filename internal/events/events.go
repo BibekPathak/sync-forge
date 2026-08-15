@@ -22,6 +22,12 @@ type Provenance struct {
 	// resolving a conflict: the worker applies the chosen side without
 	// re-running conflict detection (or ordering/loop checks) on it.
 	ResolvedConflictID string `json:"resolved_conflict_id,omitempty"`
+
+	// ReconcileFindingID marks a synthetic event produced by the reconciliation
+	// engine (or an operator approving a manual finding): the worker applies the
+	// finding's chosen repair direction directly, without re-running conflict,
+	// ordering, or loop checks.
+	ReconcileFindingID string `json:"reconcile_finding_id,omitempty"`
 }
 
 // Event is the canonical synchronization event. Events are immutable: once

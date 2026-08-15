@@ -41,7 +41,7 @@ func newDB(t *testing.T) *db.DB {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := database.Admin.Exec(context.Background(),
-		`TRUNCATE audit_log, outbound_writes, sync_operations, reconciliation_runs, sync_jobs,
+		`TRUNCATE audit_log, outbound_writes, sync_operations, reconciliation_findings, reconciliation_runs, sync_jobs,
 		         conflicts, dead_letter, retry_queue, processed_events, source_events,
 		         canonical_records, sync_policies, connections, api_keys, users, tenants RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("reset db: %v", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -125,6 +126,24 @@ func (w *Worker) Process(ctx context.Context, ev *events.Event) error {
 	if err != nil {
 		w.fail(ctx, ev, err)
 		return err
+	}
+
+	// A reconcile repair event applies a parked/auto finding directly: the
+	// engine (or operator) has already decided the direction, so no ordering,
+	// echo, or conflict checks re-run.
+	if ev.Provenance.ReconcileFindingID != "" {
+		if err := w.applyReconcileFinding(ctx, ev, entityType, policies); err != nil {
+			w.fail(ctx, ev, err)
+			return err
+		}
+		if err := store.SetSourceEventStatus(ctx, w.db.App, ev.TenantID, ev.EventID, "validated", "processed"); err != nil {
+			w.log.Warn("mark reconcile finding event processed", "event_id", ev.EventID, "error", err)
+		}
+		w.metrics.EventsSuccess.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(ev.Source)))
+		w.metrics.ProcessingDuration.Record(ctx, time.Since(start).Seconds())
+		w.log.Info("reconcile finding applied",
+			"event_id", ev.EventID, "source", ev.Source, "finding", ev.Provenance.ReconcileFindingID)
+		return nil
 	}
 
 	var targets []store.SyncPolicy
@@ -635,4 +654,254 @@ func (w *Worker) applyResolution(ctx context.Context, ev *events.Event, entityTy
 		"conflict", ev.Provenance.ResolvedConflictID, "entity", canonical.EntityID,
 		"winner", ev.Source, "fields", len(fields))
 	return nil
+}
+
+// applyReconcileFinding applies an operator-approved or auto-mode repair for a
+// reconciliation finding. The direction was decided by the engine (or the
+// operator approving a manual finding), so no conflict, ordering, or echo
+// checks re-run. Success transitions the finding to applied; a retryable
+// failure marks it failed (the retry machinery may re-run the same event id).
+func (w *Worker) applyReconcileFinding(ctx context.Context, ev *events.Event, entityType string, policies []store.SyncPolicy) error {
+	tenant := ev.TenantID
+	finding, err := store.GetReconciliationFinding(ctx, w.db.App, tenant, ev.Provenance.ReconcileFindingID)
+	if errors.Is(err, store.ErrNotFound) {
+		w.log.Warn("reconcile repair skipped: finding gone", "finding", ev.Provenance.ReconcileFindingID)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// Terminal states (applied/dismissed/skipped/failed) are never re-applied.
+	if finding.Status != store.FindingPending {
+		return nil
+	}
+
+	run, err := store.GetReconciliationRun(ctx, w.db.App, tenant, finding.RunID)
+	if err != nil {
+		return err
+	}
+	srcConn, err := store.GetConnectionByProvider(ctx, w.db.App, tenant, run.Source)
+	if err != nil {
+		return err
+	}
+	srcAdapter, err := registry.New(srcConn.Provider, srcConn.BaseURL, "")
+	if err != nil {
+		return err
+	}
+
+	switch finding.Direction {
+	case "delete":
+		// The canonical record is tombstoned but the provider still serves a
+		// live record: push the delete. NOT_FOUND means the provider already
+		// cleaned it up.
+		err := srcAdapter.Delete(ctx, finding.ProviderID)
+		if err != nil {
+			if !connectors.IsKind(err, connectors.ErrNotFound) {
+				return w.reconcileFail(ctx, finding, err)
+			}
+		}
+		w.metrics.DestinationWrites.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(run.Source)))
+		return w.reconcileApplied(ctx, finding)
+
+	case "push_canonical":
+		// Canonical wins: write canonical state back to the provider. The
+		// record is updated when the provider already has it (drift); a
+		// missing record is re-created and the new id mapped.
+		canonical, err := store.GetCanonical(ctx, w.db.App, tenant, entityType, finding.CanonicalID)
+		if errors.Is(err, store.ErrNotFound) {
+			return w.reconcileSkip(ctx, finding, "canonical record gone")
+		}
+		if err != nil {
+			return err
+		}
+		cust := &model.Customer{TenantID: tenant, EntityID: canonical.EntityID}
+		cust.FromFields(canonical.Fields)
+		dstRec, err := srcAdapter.Denormalize(cust)
+		if err != nil {
+			return w.reconcileFail(ctx, finding, err)
+		}
+
+		providerID := finding.ProviderID
+		var updated connectors.ProviderRecord
+		if finding.Kind == store.FindingMissing || providerID == "" {
+			created, err := srcAdapter.Create(ctx, dstRec)
+			if err != nil {
+				return w.reconcileFail(ctx, finding, err)
+			}
+			providerID, updated = created.ID, created
+		} else {
+			updated, err = srcAdapter.Update(ctx, providerID, dstRec)
+			if err != nil {
+				if !connectors.IsKind(err, connectors.ErrNotFound) {
+					return w.reconcileFail(ctx, finding, err)
+				}
+				// Provider deleted it concurrently: recreate to converge.
+				created, err := srcAdapter.Create(ctx, dstRec)
+				if err != nil {
+					return w.reconcileFail(ctx, finding, err)
+				}
+				providerID, updated = created.ID, created
+			}
+		}
+
+		// Persist the mapping + source version so future events converge, and
+		// record the outbound fingerprint so the provider's echo of our write
+		// is recognized and dropped.
+		canonical.ProviderIDs[run.Source] = providerID
+		canonical.SourceVersions[run.Source] = updated.SourceVersion
+		canonical.Version++
+		canonical.Tombstone = false
+		if _, err := store.UpsertCanonical(ctx, w.db.App, canonical); err != nil {
+			return err
+		}
+		if err := store.UpsertOutboundWrite(ctx, w.db.App, store.OutboundWrite{
+			TenantID:       tenant,
+			EntityType:     entityType,
+			EntityID:       canonical.EntityID,
+			TargetSource:   run.Source,
+			Fingerprint:    cust.Fingerprint(),
+			AppliedVersion: updated.SourceVersion,
+		}); err != nil {
+			return err
+		}
+		w.metrics.DestinationWrites.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(run.Source)))
+		return w.reconcileApplied(ctx, finding)
+
+	case "adopt_provider":
+		// Provider wins: the finding's provider fields become canonical and are
+		// propagated to every destination. Used for missed records (provider
+		// has a record we never ingested) and drift repairs where the operator
+		// picked the provider side.
+		return w.applyAdoptProvider(ctx, ev, entityType, policies, finding, run, srcAdapter)
+
+	default:
+		return w.reconcileFail(ctx, finding, fmt.Errorf("unknown reconcile direction %q", finding.Direction))
+	}
+}
+
+// applyAdoptProvider treats the provider's state as authoritative: resolve (or
+// create) the canonical entity from the provider record and propagate the
+// provider fields to every configured destination.
+func (w *Worker) applyAdoptProvider(ctx context.Context, ev *events.Event, entityType string, policies []store.SyncPolicy, finding store.ReconciliationFinding, run store.ReconciliationRun, srcAdapter connectors.Adapter) error {
+	tenant := ev.TenantID
+	cust := &model.Customer{TenantID: tenant, EntityID: finding.ProviderID}
+	cust.FromFields(finding.ProviderFields)
+
+	canonical, err := store.GetCanonicalByProvider(ctx, w.db.App, tenant, entityType, run.Source, finding.ProviderID)
+	if errors.Is(err, store.ErrNotFound) {
+		// Identity resolution by email (mirrors the ingest path) before
+		// creating a fresh canonical record.
+		canonical, err = store.GetCanonicalByEmail(ctx, w.db.App, tenant, entityType, cust.Email)
+		if errors.Is(err, store.ErrNotFound) {
+			canonical = store.CanonicalRecord{
+				TenantID:        tenant,
+				EntityType:      entityType,
+				EntityID:        finding.ProviderID,
+				ProviderIDs:     map[string]string{run.Source: finding.ProviderID},
+				SourceVersions:  map[string]int64{},
+				FieldProvenance: map[string]any{},
+			}
+		} else if err != nil {
+			return err
+		} else {
+			if err := store.AddProviderID(ctx, w.db.App, tenant, entityType, canonical.EntityID, run.Source, finding.ProviderID); err != nil {
+				return err
+			}
+			canonical.ProviderIDs[run.Source] = finding.ProviderID
+		}
+	} else if err != nil {
+		return err
+	}
+	if canonical.EntityID == "" {
+		canonical.EntityID = finding.ProviderID
+	}
+	cust.EntityID = canonical.EntityID
+
+	// Propagate the provider state to every destination configured for this
+	// source.
+	for _, policy := range policies {
+		if policy.Source != run.Source {
+			continue
+		}
+		dstConn, err := store.GetConnectionByProvider(ctx, w.db.App, tenant, policy.Destination)
+		if err != nil {
+			return err
+		}
+		dstAdapter, err := registry.New(dstConn.Provider, dstConn.BaseURL, "")
+		if err != nil {
+			return err
+		}
+		dstRec, err := dstAdapter.Denormalize(cust)
+		if err != nil {
+			return err
+		}
+		dstID := canonical.ProviderIDs[policy.Destination]
+		if dstID == "" {
+			created, err := dstAdapter.Create(ctx, dstRec)
+			if err != nil {
+				return err
+			}
+			canonical.ProviderIDs[policy.Destination] = created.ID
+		} else if _, err := dstAdapter.Update(ctx, dstID, dstRec); err != nil {
+			return err
+		}
+		w.metrics.DestinationWrites.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(policy.Destination)))
+		if err := store.UpsertOutboundWrite(ctx, w.db.App, store.OutboundWrite{
+			TenantID:     tenant,
+			EntityType:   entityType,
+			EntityID:     canonical.EntityID,
+			TargetSource: policy.Destination,
+			Fingerprint:  cust.Fingerprint(),
+		}); err != nil {
+			return err
+		}
+	}
+
+	canonical.Fields = cust.Fields()
+	canonical.FieldProvenance = map[string]any{}
+	for k := range cust.Fields() {
+		canonical.FieldProvenance[k] = map[string]any{
+			"source":      run.Source,
+			"version":     finding.ProviderVersion,
+			"occurred_at": ev.OccurredAt,
+			"priority":    100,
+		}
+	}
+	canonical.SourceVersions[run.Source] = finding.ProviderVersion
+	canonical.Version++
+	canonical.OriginSource = run.Source
+	canonical.OriginEventID = ev.EventID
+	canonical.Tombstone = false
+	if _, err := store.UpsertCanonical(ctx, w.db.App, canonical); err != nil {
+		return err
+	}
+	return w.reconcileApplied(ctx, finding)
+}
+
+// reconcileApplied transitions a finding to applied and records a repair.
+func (w *Worker) reconcileApplied(ctx context.Context, finding store.ReconciliationFinding) error {
+	if err := store.SetReconciliationFindingStatus(ctx, w.db.App, finding.TenantID, finding.ID, store.FindingApplied, nil); err != nil {
+		w.log.Warn("mark reconcile finding applied", "finding", finding.ID, "error", err)
+	}
+	w.metrics.ReconcileRepairs.Add(ctx, 1)
+	return nil
+}
+
+// reconcileSkip parks a finding that cannot be applied (e.g. the canonical
+// record is gone). Skipped is terminal.
+func (w *Worker) reconcileSkip(ctx context.Context, finding store.ReconciliationFinding, reason string) error {
+	if err := store.SetReconciliationFindingStatus(ctx, w.db.App, finding.TenantID, finding.ID, store.FindingSkipped, &reason); err != nil {
+		w.log.Warn("mark reconcile finding skipped", "finding", finding.ID, "error", err)
+	}
+	return nil
+}
+
+// reconcileFail marks a finding failed with the cause. It returns the error so
+// the caller's failure path (retry/DLQ) still owns the event.
+func (w *Worker) reconcileFail(ctx context.Context, finding store.ReconciliationFinding, cause error) error {
+	msg := cause.Error()
+	if err := store.SetReconciliationFindingStatus(ctx, w.db.App, finding.TenantID, finding.ID, store.FindingFailed, &msg); err != nil {
+		w.log.Warn("mark reconcile finding failed", "finding", finding.ID, "error", err)
+	}
+	return cause
 }

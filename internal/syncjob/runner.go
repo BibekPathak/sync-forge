@@ -17,16 +17,18 @@ import (
 	"syncforge/internal/connectors/registry"
 	"syncforge/internal/db"
 	"syncforge/internal/events"
+	"syncforge/internal/reconcile"
 	"syncforge/internal/store"
 	"syncforge/internal/syncworker"
 )
 
 // Runner claims pending sync jobs and executes them, resuming on crash.
 type Runner struct {
-	db        *db.DB
-	worker    *syncworker.Worker
-	log       *slog.Logger
-	pollEvery time.Duration
+	db         *db.DB
+	worker     *syncworker.Worker
+	reconciler *reconcile.Engine
+	log        *slog.Logger
+	pollEvery  time.Duration
 }
 
 // New builds a sync job runner.
@@ -35,6 +37,13 @@ func New(database *db.DB, worker *syncworker.Worker, log *slog.Logger) *Runner {
 		log = slog.Default()
 	}
 	return &Runner{db: database, worker: worker, log: log, pollEvery: 2 * time.Second}
+}
+
+// WithReconciler attaches the reconciliation engine used for reconcile-type
+// jobs. Without it, reconcile jobs are aborted as misconfigured.
+func (r *Runner) WithReconciler(rec *reconcile.Engine) *Runner {
+	r.reconciler = rec
+	return r
 }
 
 // Run polls for runnable jobs until ctx is cancelled. Each job processes
@@ -72,6 +81,15 @@ func (r *Runner) Execute(ctx context.Context, job store.SyncJob) error {
 func (r *Runner) execute(ctx context.Context, job store.SyncJob) error {
 	r.log.Info("sync job starting", "job", job.ID, "tenant", job.TenantID,
 		"source", job.Source, "destination", job.Destination, "cursor", nullable(job.Cursor))
+
+	// Reconcile-type jobs delegate to the reconciliation engine, which owns
+	// its own lifecycle (findings, counters, finish) for the run.
+	if job.Type == "reconcile" {
+		if r.reconciler == nil {
+			return r.abort(ctx, job, errors.New("reconcile engine not configured"))
+		}
+		return r.reconciler.Run(ctx, job)
+	}
 
 	srcConn, err := store.GetConnectionByProvider(ctx, r.db.App, job.TenantID, job.Source)
 	if err != nil {

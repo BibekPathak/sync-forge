@@ -24,6 +24,7 @@ import (
 	"syncforge/internal/eventbus"
 	"syncforge/internal/ingestion"
 	"syncforge/internal/observability"
+	"syncforge/internal/reconcile"
 	"syncforge/internal/retry"
 	"syncforge/internal/simulator"
 	"syncforge/internal/store"
@@ -122,6 +123,8 @@ func newPipelineHarness(t *testing.T) *pipelineHarness {
 			BatchSize:   100,
 		})
 	syncRunner := syncjob.New(database, worker, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	reconciler := reconcile.New(database, worker, syncMetrics, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	syncRunner.WithReconciler(reconciler)
 
 	// Start worker consumer + ingestion processor.
 	workerErr := make(chan error, 1)
