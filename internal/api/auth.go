@@ -17,7 +17,18 @@ const (
 	ctxTenantID ctxKey = "tenant_id"
 	ctxRole     ctxKey = "role"
 	ctxActor    ctxKey = "actor"
+	ctxKeyID    ctxKey = "key_id"
 )
+
+// roleRank orders the tenant roles: a higher role implies every capability of
+// the lower ones, so an endpoint guarded by requireRole(min) is accessible to
+// any key whose rank is at least min's.
+var roleRank = map[string]int{
+	"VIEWER":    0,
+	"DEVELOPER": 1,
+	"OPERATOR":  2,
+	"ADMIN":     3,
+}
 
 // hashAPIKey hashes an API key for storage. We store only the hash; the raw
 // key is shown once at creation time.
@@ -60,24 +71,45 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), ctxTenantID, k.TenantID)
 		ctx = context.WithValue(ctx, ctxRole, k.Role)
 		ctx = context.WithValue(ctx, ctxActor, "key:"+k.Name)
+		ctx = context.WithValue(ctx, ctxKeyID, k.ID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// requireBootstrap guards tenant-management endpoints. Until full RBAC lands
-// (Phase 7), these use a fixed bootstrap key from configuration.
-func (s *Server) requireBootstrap(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Bootstrap-Key") != s.cfg.BootstrapKey {
-			writeError(w, http.StatusUnauthorized, "invalid bootstrap key")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+// requireRole authenticates via an API key and then enforces a minimum role.
+// Role ranking lives in roleRank; ADMIN (3) > OPERATOR (2) > DEVELOPER (1) >
+// VIEWER (0). An endpoint requiring role R rejects any key with a lower rank.
+func (s *Server) requireRole(minRole string) func(http.Handler) http.Handler {
+	minRank, ok := roleRank[minRole]
+	if !ok {
+		panic("requireRole: unknown role " + minRole)
+	}
+	return func(next http.Handler) http.Handler {
+		return s.requireAPIKey(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			role := roleFrom(r)
+			if roleRank[role] < minRank {
+				writeError(w, http.StatusForbidden, "insufficient role")
+				return
+			}
+			next.ServeHTTP(w, r)
+		}))
+	}
 }
 
 // tenantIDFrom returns the tenant id injected by requireAPIKey.
 func tenantIDFrom(r *http.Request) string {
 	v, _ := r.Context().Value(ctxTenantID).(string)
+	return v
+}
+
+// roleFrom returns the role injected by requireAPIKey.
+func roleFrom(r *http.Request) string {
+	v, _ := r.Context().Value(ctxRole).(string)
+	return v
+}
+
+// actorKeyID returns the id of the API key authenticating the request.
+func actorKeyID(r *http.Request) string {
+	v, _ := r.Context().Value(ctxKeyID).(string)
 	return v
 }

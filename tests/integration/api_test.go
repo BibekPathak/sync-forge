@@ -164,7 +164,7 @@ func TestConnectionsAPIWithRLS(t *testing.T) {
 		t.Fatalf("expected 401 for bad api key, got %d", resp.StatusCode)
 	}
 
-	// Tenant management requires the bootstrap key.
+	// Tenant management requires an ADMIN role API key (RBAC).
 	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/api/v1/tenants", nil)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -172,17 +172,17 @@ func TestConnectionsAPIWithRLS(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for missing bootstrap key, got %d", resp.StatusCode)
+		t.Fatalf("expected 401 for missing api key, got %d", resp.StatusCode)
 	}
 	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/api/v1/tenants", nil)
-	req.Header.Set("X-Bootstrap-Key", "syncforge-admin-dev")
+	req.Header.Set("X-API-Key", "sfk_acme_dev")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 with bootstrap key, got %d", resp.StatusCode)
+		t.Fatalf("expected 200 with admin api key, got %d", resp.StatusCode)
 	}
 }
 

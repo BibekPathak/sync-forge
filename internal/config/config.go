@@ -17,8 +17,6 @@ type Config struct {
 	AdminDBURL string
 	RedisAddr  string
 
-	BootstrapKey string
-
 	KafkaBrokers string
 	KafkaGroupID string
 
@@ -44,8 +42,6 @@ func Load() Config {
 		DBURL:      get("DATABASE_URL", "postgres://syncforge_app:syncforge_app@localhost:5432/syncforge?sslmode=disable"),
 		AdminDBURL: get("ADMIN_DATABASE_URL", "postgres://syncforge_engine:syncforge_engine@localhost:5432/syncforge?sslmode=disable"),
 		RedisAddr:  get("REDIS_ADDR", "localhost:6379"),
-
-		BootstrapKey: get("SYNCFORGE_BOOTSTRAP_KEY", "syncforge-admin-dev"),
 
 		KafkaBrokers: get("KAFKA_BROKERS", "localhost:29092"),
 		KafkaGroupID: get("KAFKA_GROUP_ID", "syncforge-engine"),

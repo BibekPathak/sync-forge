@@ -7,10 +7,10 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 4 (Reliability) — build in progress.** Bidirectional
-> synchronization plus durable retries with exponential backoff + jitter, a
-> dead-letter queue with operator replay, client-side rate limiting, and
-> resumable initial full-sync jobs. See
+> **Status: Phase 7 (RBAC) — build in progress.** Bidirectional
+> synchronization, durable retries + dead-letter queue, conflict detection and
+> resolution, reconciliation (auto/manual repairs), and role-based API key
+> access control with key minting/revocation. See
 > [docs/architecture.md](docs/architecture.md) and
 > [docs/failure-recovery.md](docs/failure-recovery.md).
 
@@ -304,18 +304,19 @@ Tests that currently exist:
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 5)
+## 9. Known limitations (Phase 7)
 
 - Identity resolution is email-only and single-match; ambiguous or missing
   emails fall back to a new canonical record.
 - Retries use fixed configured bounds (base/max/max-attempts); adaptive retry
   honoring provider hints is limited to `Retry-After` shrinking, not dynamic
   growth.
-- Tenant management is gated by a fixed bootstrap key until full RBAC (Phase 7).
+- RBAC is role-based API-key enforcement (VIEWER/DEVELOPER/OPERATOR/ADMIN)
+  with key minting, listing, and revocation; there is no per-user login or
+  multi-factor flow yet.
 - Simulated providers keep state in memory (intentional: they are external
   systems; their durability isn't SyncForge's concern).
 
 ## 10. Next phases
 
-Reconciliation (Phase 6), RBAC (Phase 7), observability, failure injection, and
-benchmarking.
+Observability, failure injection, and benchmarking.

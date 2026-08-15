@@ -14,7 +14,12 @@ Phase 6 (Reconciliation) implemented: resumable sweeps classify every provider
 record against the canonical model (drift / missed / deleted / missing) and
 repair or park it. `auto` runs fix divergences inline (canonical wins by
 default); `manual` runs park findings for operator approval via the API.
-Phases 7–10 build on this structure.
+
+Phase 7 (RBAC) implemented: every tenant-scoped endpoint is gated by a role
+rank (VIEWER < DEVELOPER < OPERATOR < ADMIN), API keys can be minted, listed,
+and revoked via the API (raw key shown once), and tenant management moved from
+a fixed bootstrap key to the ADMIN role.
+Phases 8–10 build on this structure.
 
 ## Process model
 
@@ -132,7 +137,7 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
 - `internal/store` — data-access layer: tenants, connections, api keys,
   source events, processed events, canonical records, sync policies,
   outbound writes, conflicts, reconciliation runs and findings.
-- `internal/api` — HTTP handlers, auth middleware (API keys + bootstrap),
+- `internal/api` — HTTP handlers, auth middleware (role-ranked API keys),
   webhook gateway.
 - `internal/events` — immutable canonical event contract + partition key.
 - `internal/observability` — OpenTelemetry SDK wiring, Prometheus exporter,
@@ -148,3 +153,12 @@ for the transaction. Reads with no tenant context return zero rows (fail-closed)
 `syncforge_engine` has `BYPASSRLS` and is used for cross-tenant administration
 (tenant management, key verification, internal workers). Worker tenant-scoped
 operations still go through `WithTenant` so RLS remains active for them too.
+
+Each API key carries a role (`VIEWER` < `DEVELOPER` < `OPERATOR` < `ADMIN`);
+`requireRole(min)` ranks keys and rejects anything below the endpoint's
+requirement (403). Role gates are layered on top of `requireAPIKey`, which
+injects `tenant_id`, `role`, and `key_id` into the request context. Tenant
+management and key minting/revocation are `ADMIN`-only; key creation is
+tenant-scoped via `CreateTenantAPIKey` so RLS enforces the `WITH CHECK`.
+A key cannot revoke itself, and no key can mint another above its own rank.
+Raw keys are shown exactly once at creation; only the hash is stored.

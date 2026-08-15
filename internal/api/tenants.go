@@ -29,7 +29,29 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create tenant")
 		return
 	}
-	writeJSON(w, http.StatusCreated, t)
+
+	// Provision the tenant's initial ADMIN key and return the raw credential
+	// exactly once; only its hash is stored.
+	raw, err := newRawAPIKey()
+	if err != nil {
+		s.log.Error("generate tenant admin key", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to provision admin key")
+		return
+	}
+	if _, err := store.CreateAPIKey(r.Context(), s.db.Admin, t.ID, "initial-admin", "ADMIN", hashAPIKey(raw)); err != nil {
+		s.log.Error("create tenant admin key", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to provision admin key")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":         t.ID,
+		"name":       t.Name,
+		"slug":       t.Slug,
+		"status":     t.Status,
+		"created_at": t.CreatedAt,
+		"api_key":    raw,
+	})
 }
 
 func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
