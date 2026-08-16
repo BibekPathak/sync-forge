@@ -20,6 +20,9 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.Handle("GET /api/v1/metrics", metricsHandler)
 
+	// user authentication (login issues a signed session token)
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+
 	// tenant management (platform provisioning: ADMIN role only)
 	mux.Handle("POST /api/v1/tenants", s.requireRole("ADMIN")(http.HandlerFunc(s.handleCreateTenant)))
 	mux.Handle("GET /api/v1/tenants", s.requireRole("ADMIN")(http.HandlerFunc(s.handleListTenants)))
@@ -28,6 +31,10 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.Handle("POST /api/v1/keys", s.requireRole("ADMIN")(http.HandlerFunc(s.handleCreateAPIKey)))
 	mux.Handle("GET /api/v1/keys", s.requireRole("ADMIN")(http.HandlerFunc(s.handleListAPIKeys)))
 	mux.Handle("POST /api/v1/keys/{id}/revoke", s.requireRole("ADMIN")(http.HandlerFunc(s.handleRevokeAPIKey)))
+
+	// users (ADMIN: create/list tenant login accounts)
+	mux.Handle("POST /api/v1/users", s.requireRole("ADMIN")(http.HandlerFunc(s.handleCreateUser)))
+	mux.Handle("GET /api/v1/users", s.requireRole("ADMIN")(http.HandlerFunc(s.handleListUsers)))
 
 	// tenant-scoped resources (API key auth + RLS + role gate)
 	// VIEWER may read; DEVELOPER may configure connections and jobs.

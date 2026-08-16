@@ -76,16 +76,17 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 	})
 }
 
-// requireRole authenticates via an API key and then enforces a minimum role.
-// Role ranking lives in roleRank; ADMIN (3) > OPERATOR (2) > DEVELOPER (1) >
-// VIEWER (0). An endpoint requiring role R rejects any key with a lower rank.
+// requireRole authenticates (API key or user session token) and then enforces
+// a minimum role. Role ranking lives in roleRank; ADMIN (3) > OPERATOR (2) >
+// DEVELOPER (1) > VIEWER (0). An endpoint requiring role R rejects any caller
+// with a lower rank.
 func (s *Server) requireRole(minRole string) func(http.Handler) http.Handler {
 	minRank, ok := roleRank[minRole]
 	if !ok {
 		panic("requireRole: unknown role " + minRole)
 	}
 	return func(next http.Handler) http.Handler {
-		return s.requireAPIKey(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return s.authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			role := roleFrom(r)
 			if roleRank[role] < minRank {
 				writeError(w, http.StatusForbidden, "insufficient role")

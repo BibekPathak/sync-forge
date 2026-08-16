@@ -4,11 +4,19 @@ import (
 	"context"
 	"fmt"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"syncforge/internal/store"
 )
 
 // Known demo API key. In production these are generated and returned once.
 const demoAPIKey = "sfk_acme_dev"
+
+// Known demo user credentials (login via POST /api/v1/auth/login).
+const (
+	demoUserEmail    = "admin@acme.dev"
+	demoUserPassword = "syncforge-demo"
+)
 
 // seed idempotently provisions the demo tenant and its fixtures.
 func (s *Server) seed(ctx context.Context) (struct{}, error) {
@@ -59,6 +67,18 @@ func (s *Server) seed(ctx context.Context) (struct{}, error) {
 			return struct{}{}, fmt.Errorf("seed api key: %w", err)
 		}
 		s.log.Info("seeded api key", "tenant", tenant.Slug)
+	}
+
+	// Seed a demo ADMIN user so the login flow is usable out of the box.
+	if _, err := store.GetUserByEmail(ctx, s.db.Admin, tenant.ID, demoUserEmail); err == store.ErrNotFound {
+		hash, err := bcrypt.GenerateFromPassword([]byte(demoUserPassword), bcrypt.DefaultCost)
+		if err != nil {
+			return struct{}{}, fmt.Errorf("seed user password: %w", err)
+		}
+		if _, err := store.CreateUser(ctx, s.db.Admin, tenant.ID, demoUserEmail, string(hash), "ADMIN"); err != nil {
+			return struct{}{}, fmt.Errorf("seed user: %w", err)
+		}
+		s.log.Info("seeded demo user", "tenant", tenant.Slug, "email", demoUserEmail)
 	}
 
 	// Bidirectional policies: customers flow both ways.

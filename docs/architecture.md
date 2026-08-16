@@ -157,11 +157,11 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
 - `internal/db` — pgx pools (app/engine), embedded migrations, and the
   `WithTenant` helper that scopes every query to a tenant via
   `SET LOCAL app.tenant_id`.
-- `internal/store` — data-access layer: tenants, connections, api keys,
+- `internal/store` — data-access layer: tenants, connections, api keys, users,
   source events, processed events, canonical records, sync policies,
   outbound writes, conflicts, reconciliation runs and findings.
-- `internal/api` — HTTP handlers, auth middleware (role-ranked API keys),
-  webhook gateway.
+- `internal/api` — HTTP handlers, auth middleware (role-ranked API keys and
+  per-user sessions), webhook gateway.
 - `internal/events` — immutable canonical event contract + partition key.
 - `internal/observability` — OpenTelemetry SDK wiring: Prometheus-exporter
   metrics (`http_*`, `sync_*`), optional OTLP tracing (`InitTracing`), and
@@ -183,9 +183,19 @@ operations still go through `WithTenant` so RLS remains active for them too.
 
 Each API key carries a role (`VIEWER` < `DEVELOPER` < `OPERATOR` < `ADMIN`);
 `requireRole(min)` ranks keys and rejects anything below the endpoint's
-requirement (403). Role gates are layered on top of `requireAPIKey`, which
-injects `tenant_id`, `role`, and `key_id` into the request context. Tenant
+requirement (403). Role gates are layered on top of `authenticate`, which tries
+API-key auth first and then falls back to a signed user session token — so
+service-to-service (API key) and human (login) callers reach the same role
+gate. `authenticate` injects `tenant_id`, `role`, `actor`, and (for keys)
+`key_id` into the request context. Tenant
 management and key minting/revocation are `ADMIN`-only; key creation is
 tenant-scoped via `CreateTenantAPIKey` so RLS enforces the `WITH CHECK`.
 A key cannot revoke itself, and no key can mint another above its own rank.
 Raw keys are shown exactly once at creation; only the hash is stored.
+
+Users log in via `POST /api/v1/auth/login` (tenant slug + email + password).
+Passwords are bcrypt-hashed (`users.password_hash`); login returns a signed
+HMAC session token (12h TTL, `SYNCFORGE_AUTH_SECRET`) carrying `tenant_id` +
+`role`, so `requireRole` authorizes them with no per-request DB round-trip.
+Users are tenant-scoped and ADMIN-created (`POST/GET /api/v1/users`), and RLS
+enforces the `WITH CHECK` exactly like API keys.

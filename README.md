@@ -236,7 +236,8 @@ provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
 - API: `/health`, `/api/v1/tenants`, `/api/v1/connections`,
   `/api/v1/metrics`, `/webhooks/{provider}/{tenant_slug}`.
 - Auth: API keys (hashed at rest) with role-ranked access control
-  (VIEWER/DEVELOPER/OPERATOR/ADMIN).
+  (VIEWER/DEVELOPER/OPERATOR/ADMIN), plus per-user login with bcrypt-hashed
+  passwords and signed session tokens (`POST /api/v1/auth/login`).
 - Observability: OpenTelemetry metrics via Prometheus, Grafana dashboard.
 - Dashboard: Next.js static export + proxy.
 
@@ -259,7 +260,8 @@ make up
 | HubSpot sim | http://localhost:9082 |
 
 Seed data is created automatically: tenant **Acme**, Salesforce + HubSpot
-connections, API key **`sfk_acme_dev`**.
+connections, API key **`sfk_acme_dev`**, and a demo user
+**`admin@acme.dev` / `syncforge-demo`** (login via `POST /api/v1/auth/login`).
 
 ### Smoke test
 
@@ -315,9 +317,9 @@ Tests that currently exist:
 - Retries use fixed configured bounds (base/max/max-attempts); adaptive retry
   honoring provider hints is limited to `Retry-After` shrinking, not dynamic
   growth.
-- RBAC is role-based API-key enforcement (VIEWER/DEVELOPER/OPERATOR/ADMIN)
-  with key minting, listing, and revocation; there is no per-user login or
-  multi-factor flow yet.
+- RBAC is role-ranked (VIEWER/DEVELOPER/OPERATOR/ADMIN) with API-key auth and
+  per-user login (bcrypt + signed session tokens); there is no multi-factor,
+  refresh-token rotation, or SSO yet.
 - Tracing is optional (disabled without `OTEL_EXPORTER_OTLP_ENDPOINT`); the
   compose stack ships an OpenTelemetry collector + Jaeger for the demo.
 - Load tests run in-process (in-memory bus, embedded sims); `scripts/bench.sh`

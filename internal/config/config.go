@@ -24,6 +24,10 @@ type Config struct {
 	// "collector:4318"). Empty disables tracing (no-op provider).
 	OTLPEndpoint string
 
+	// AuthSecret signs user session tokens (HMAC-SHA256). Override in
+	// production; the default is for local development only.
+	AuthSecret string
+
 	SeedAcme       bool
 	SeedSFBaseURL  string
 	SeedHubBaseURL string
@@ -50,6 +54,7 @@ func Load() Config {
 		KafkaBrokers: get("KAFKA_BROKERS", "localhost:29092"),
 		KafkaGroupID: get("KAFKA_GROUP_ID", "syncforge-engine"),
 		OTLPEndpoint: get("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		AuthSecret:   get("SYNCFORGE_AUTH_SECRET", "syncforge-auth-dev"),
 
 		SeedAcme:       getBool("SYNCFORGE_SEED_ACME", true),
 		SeedSFBaseURL:  get("SYNCFORGE_SEED_SALESFORCE_URL", "http://localhost:9081"),
