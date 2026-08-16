@@ -91,6 +91,24 @@ func (w *Worker) adapterFor(provider, baseURL string) (connectors.Adapter, error
 	return registry.NewWithTimeout(provider, baseURL, "", w.opts.ConnectorTimeout, 0)
 }
 
+// recordSyncOperation appends one row to the sync_operations ledger for an
+// applied destination write. Best-effort: a ledger failure must not fail the
+// propagation itself.
+func (w *Worker) recordSyncOperation(ctx context.Context, tenant, entityType, entityID, source, target string, version int64, eventID, fingerprint string) {
+	if _, err := store.InsertSyncOperation(ctx, w.db.App, store.SyncOperation{
+		TenantID:       tenant,
+		EntityType:     entityType,
+		EntityID:       entityID,
+		Source:         source,
+		TargetSource:   target,
+		EventID:        eventID,
+		AppliedVersion: version,
+		Fingerprint:    fingerprint,
+	}); err != nil {
+		w.log.Warn("sync operation ledger write failed", "entity", entityID, "target", target, "error", err)
+	}
+}
+
 // Handle implements eventbus.Handler. A processing failure is acknowledged
 // (nil) only after it has been made durable in the retry queue or DLQ; this
 // keeps broker semantics at at-least-once while the durable machinery owns the
@@ -444,6 +462,8 @@ func (w *Worker) applyUpsert(ctx context.Context, ev *events.Event, entityType s
 		}); err != nil {
 			return err
 		}
+		w.recordSyncOperation(ctx, tenant, entityType, canonical.EntityID, ev.Source,
+			policy.Destination, ev.SourceVersion, ev.EventID, cust.Fingerprint())
 	}
 
 	// 6. Persist canonical state.
@@ -494,6 +514,8 @@ func (w *Worker) applyDelete(ctx context.Context, ev *events.Event, entityType s
 			return err
 		}
 		w.metrics.DestinationWrites.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(policy.Destination)))
+		w.recordSyncOperation(ctx, tenant, entityType, canonical.EntityID, ev.Source,
+			policy.Destination, ev.SourceVersion, ev.EventID, "")
 	}
 
 	canonical.Tombstone = true
@@ -653,6 +675,8 @@ func (w *Worker) applyResolution(ctx context.Context, ev *events.Event, entityTy
 		}); err != nil {
 			return err
 		}
+		w.recordSyncOperation(ctx, tenant, entityType, canonical.EntityID, ev.Source,
+			policy.Destination, ev.SourceVersion, ev.EventID, cust.Fingerprint())
 	}
 
 	// The winning source now owns every field it carried forward; other fields
@@ -732,6 +756,8 @@ func (w *Worker) applyReconcileFinding(ctx context.Context, ev *events.Event, en
 			}
 		}
 		w.metrics.DestinationWrites.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(run.Source)))
+		w.recordSyncOperation(ctx, tenant, entityType, finding.CanonicalID, run.Source,
+			run.Source, finding.ProviderVersion, ev.EventID, "")
 		return w.reconcileApplied(ctx, finding)
 
 	case "push_canonical":
@@ -796,6 +822,8 @@ func (w *Worker) applyReconcileFinding(ctx context.Context, ev *events.Event, en
 			return err
 		}
 		w.metrics.DestinationWrites.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(run.Source)))
+		w.recordSyncOperation(ctx, tenant, entityType, canonical.EntityID, run.Source,
+			run.Source, finding.ProviderVersion, ev.EventID, cust.Fingerprint())
 		return w.reconcileApplied(ctx, finding)
 
 	case "adopt_provider":
@@ -886,6 +914,8 @@ func (w *Worker) applyAdoptProvider(ctx context.Context, ev *events.Event, entit
 		}); err != nil {
 			return err
 		}
+		w.recordSyncOperation(ctx, tenant, entityType, canonical.EntityID, run.Source,
+			policy.Destination, finding.ProviderVersion, ev.EventID, cust.Fingerprint())
 	}
 
 	canonical.Fields = cust.Fields()

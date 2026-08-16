@@ -42,6 +42,14 @@ recover → rate-limit → recover asserting zero data loss and no duplicates, a
 `scripts/bench.sh` benchmarks the full compose stack (real Redpanda + Postgres)
 at increasing concurrency with metric sampling.
 
+Phase 11 (Audit trail) implemented: the documented durable audit trail is now
+real. `audit_log` records every operator/security action (conflict resolve /
+dismiss, reconciliation finding apply / dismiss, DLQ retry / discard, API key
+and user management, login success and failure) with the acting identity, and
+`sync_operations` is a per-write ledger of every destination mutation the
+engine applies, backing loop-prevention forensics and the "every write is
+auditable" guarantee. Both are tenant-scoped (RLS) and read via the API.
+
 ## Process model
 
 | Process | Role | Why a separate process |
@@ -159,7 +167,8 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   `SET LOCAL app.tenant_id`.
 - `internal/store` — data-access layer: tenants, connections, api keys, users,
   source events, processed events, canonical records, sync policies,
-  outbound writes, conflicts, reconciliation runs and findings.
+  outbound writes, conflicts, reconciliation runs and findings, audit log and
+  sync operations ledger.
 - `internal/api` — HTTP handlers, auth middleware (role-ranked API keys and
   per-user sessions), webhook gateway.
 - `internal/events` — immutable canonical event contract + partition key.

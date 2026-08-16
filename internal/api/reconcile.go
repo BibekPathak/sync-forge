@@ -205,7 +205,9 @@ func (s *Server) handleApplyFinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to enqueue repair")
 		return
 	}
-
+	s.audit(r, "finding.apply", "reconciliation_finding", f.ID, map[string]any{
+		"run_id": f.RunID, "kind": f.Kind, "direction": direction, "provider_id": f.ProviderID,
+	})
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"status":    "apply_queued",
 		"id":        f.ID,
@@ -239,6 +241,9 @@ func (s *Server) handleDismissFinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to dismiss finding")
 		return
 	}
+	s.audit(r, "finding.dismiss", "reconciliation_finding", findingID, map[string]any{
+		"run_id": f.RunID, "kind": f.Kind, "provider_id": f.ProviderID,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "dismissed", "id": findingID})
 }
 

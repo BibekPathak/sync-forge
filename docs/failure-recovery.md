@@ -89,7 +89,10 @@ Operator API (`X-API-Key`):
 - `POST /api/v1/dlq/{id}/discard` — acknowledge & drop
 
 Related read surface: `GET /api/v1/sync-events` filters source events by status
-(`failed`, `dlq`) to find what is stuck.
+(`failed`, `dlq`) to find what is stuck. The operator's actions on the DLQ
+(retry/discard) are recorded in `audit_log`, and every applied destination
+write is recorded in `sync_operations` (`GET /api/v1/audit`,
+`GET /api/v1/operations`).
 
 ## Initial full sync (resumable)
 

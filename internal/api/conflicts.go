@@ -134,6 +134,10 @@ func (s *Server) handleResolveConflict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.audit(r, "conflict.resolve", "conflict", c.ID, map[string]any{
+		"entity_type": c.EntityType, "entity_id": c.EntityID, "side": body.Side,
+		"winner_source": src, "winner_version": version,
+	})
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"status":    "resolution_queued",
 		"id":        c.ID,
@@ -169,7 +173,9 @@ func (s *Server) handleDismissConflict(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to dismiss conflict")
 		return
 	}
-
+	s.audit(r, "conflict.dismiss", "conflict", c.ID, map[string]any{
+		"entity_type": c.EntityType, "entity_id": c.EntityID, "strategy": c.ResolutionStrategy,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "dismissed", "id": id})
 }
 

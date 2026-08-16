@@ -36,6 +36,10 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.Handle("POST /api/v1/users", s.requireRole("ADMIN")(http.HandlerFunc(s.handleCreateUser)))
 	mux.Handle("GET /api/v1/users", s.requireRole("ADMIN")(http.HandlerFunc(s.handleListUsers)))
 
+	// audit trail + applied-write ledger (read-only, VIEWER+)
+	mux.Handle("GET /api/v1/audit", s.requireRole("VIEWER")(http.HandlerFunc(s.handleListAudit)))
+	mux.Handle("GET /api/v1/operations", s.requireRole("VIEWER")(http.HandlerFunc(s.handleListOperations)))
+
 	// tenant-scoped resources (API key auth + RLS + role gate)
 	// VIEWER may read; DEVELOPER may configure connections and jobs.
 	mux.Handle("GET /api/v1/connections", s.requireRole("VIEWER")(http.HandlerFunc(s.handleListConnections)))

@@ -77,6 +77,7 @@ func (s *Server) handleDLQRetry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to enqueue retry")
 		return
 	}
+	s.audit(r, "dlq.retry", "dead_letter", item.ID, map[string]any{"event_id": item.EventID, "error_class": item.ErrorClass})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":    "retrying",
 		"id":        item.ID,
@@ -105,6 +106,7 @@ func (s *Server) handleDLQDiscard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update dead letter")
 		return
 	}
+	s.audit(r, "dlq.discard", "dead_letter", item.ID, map[string]any{"event_id": item.EventID, "error_class": item.ErrorClass})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":   "discarded",
 		"id":       item.ID,

@@ -87,15 +87,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	tenant, err := store.GetTenantBySlug(r.Context(), s.db.Admin, req.TenantSlug)
 	if err != nil {
+		s.auditLogin(r, "", "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "unknown_tenant"})
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	user, err := store.GetUserByEmail(r.Context(), s.db.Admin, tenant.ID, req.Email)
 	if err != nil {
+		s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "unknown_user"})
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "bad_password"})
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -105,6 +108,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to issue session")
 		return
 	}
+	s.auditLogin(r, user.TenantID, "auth.login", user.Email, map[string]any{"role": user.Role})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":      token,
 		"token_type": "Bearer",
@@ -157,4 +161,48 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 		s.requireAPIKey(next).ServeHTTP(w, r)
 	})
+}
+
+// audit records an operator/security event into the tenant's audit log. It is
+// best-effort: audit failures must never fail the underlying operation.
+func (s *Server) audit(r *http.Request, action, resource, resourceID string, meta map[string]any) {
+	tenant := tenantIDFrom(r)
+	actor := "unknown"
+	if v, _ := r.Context().Value(ctxActor).(string); v != "" {
+		actor = v
+	}
+	_, err := store.InsertAuditLog(r.Context(), s.db.App, tenant, store.AuditLog{
+		TenantID:   &tenant,
+		Actor:      actor,
+		Action:     action,
+		Resource:   resource,
+		ResourceID: resourceID,
+		Metadata:   meta,
+	})
+	if err != nil {
+		s.log.Warn("audit log write failed", "action", action, "resource", resource, "error", err)
+	}
+}
+
+// auditLogin records authentication events (success and failure). Failures use
+// the admin pool with an optional tenant so attempts against unknown tenants
+// are still captured.
+func (s *Server) auditLogin(r *http.Request, tenantID, action, email string, meta map[string]any) {
+	pool := s.db.App
+	var tenantPtr *string
+	if tenantID == "" {
+		pool = s.db.Admin
+	} else {
+		tenantPtr = &tenantID
+	}
+	_, err := store.InsertAuditLog(r.Context(), pool, tenantID, store.AuditLog{
+		TenantID: tenantPtr,
+		Actor:    email,
+		Action:   action,
+		Resource: "auth",
+		Metadata: meta,
+	})
+	if err != nil {
+		s.log.Warn("audit log write failed", "action", action, "error", err)
+	}
 }

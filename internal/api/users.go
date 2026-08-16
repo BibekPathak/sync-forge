@@ -49,6 +49,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create user")
 		return
 	}
+	s.audit(r, "user.create", "user", u.ID, map[string]any{"email": u.Email, "role": u.Role})
 	writeJSON(w, http.StatusCreated, u)
 }
 

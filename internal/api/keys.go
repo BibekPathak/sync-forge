@@ -56,6 +56,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create api key")
 		return
 	}
+	s.audit(r, "key.create", "api_key", k.ID, map[string]any{"name": k.Name, "role": k.Role})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":         k.ID,
 		"tenant_id":  k.TenantID,
@@ -94,5 +95,6 @@ func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to revoke api key")
 		return
 	}
+	s.audit(r, "key.revoke", "api_key", id, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "id": id})
 }

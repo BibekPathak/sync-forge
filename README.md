@@ -7,13 +7,13 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 10 (Failure injection & chaos) — build in progress.**
+> **Status: Phase 11 (Audit trail) — build in progress.**
 > Bidirectional synchronization, durable retries + dead-letter queue, conflict
 > detection and resolution, reconciliation (auto/manual repairs), role-based
-> API key access control, a full observability stack (Grafana dashboard,
-> Prometheus alerts, OTLP tracing), Go benchmarks, webhook load generation, a
-> scripted chaos scenario, and a production-scale benchmark harness against the
-> compose stack. See
+> API key access control, per-user login, a full observability stack (Grafana
+> dashboard, Prometheus alerts, OTLP tracing), Go benchmarks, webhook load
+> generation, scripted chaos, production-scale benchmarking, and a durable
+> audit trail + applied-write ledger. See
 > [docs/architecture.md](docs/architecture.md) and
 > [docs/failure-recovery.md](docs/failure-recovery.md).
 
@@ -238,6 +238,11 @@ provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
 - Auth: API keys (hashed at rest) with role-ranked access control
   (VIEWER/DEVELOPER/OPERATOR/ADMIN), plus per-user login with bcrypt-hashed
   passwords and signed session tokens (`POST /api/v1/auth/login`).
+- Audit: `audit_log` records every operator/security action (conflict and
+  finding decisions, DLQ retry/discard, key/user management, logins) and
+  `sync_operations` is a per-write ledger of applied destination mutations,
+  both tenant-scoped and readable via `GET /api/v1/audit` and
+  `GET /api/v1/operations`.
 - Observability: OpenTelemetry metrics via Prometheus, Grafana dashboard.
 - Dashboard: Next.js static export + proxy.
 
@@ -310,7 +315,7 @@ Tests that currently exist:
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 10)
+## 9. Known limitations (Phase 11)
 
 - Identity resolution is email-only and single-match; ambiguous or missing
   emails fall back to a new canonical record.
@@ -330,6 +335,5 @@ Tests that currently exist:
 
 ## 10. Next phases
 
-Phase 10 is the last planned phase; remaining work is hardening (real-provider
-adapters, per-user auth, multi-region scaling) rather than new pipeline
-features.
+Remaining work is hardening (real-provider adapters, multi-factor / SSO,
+multi-region scaling) rather than new pipeline features.
