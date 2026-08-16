@@ -28,6 +28,18 @@ type FaultConfig struct {
 	// OutOfOrder delays webhooks with a random additional offset to break
 	// arrival order.
 	OutOfOrder bool `json:"out_of_order"`
+	// HangMS sleeps for this duration before responding, simulating a hung
+	// provider. When HangPercent is set, only that fraction of requests hang.
+	HangMS int `json:"hang_ms"`
+	// HangPercent is the probability (0..1) that a request hangs for HangMS.
+	HangPercent float64 `json:"hang_percent"`
+	// DropField removes the named field from list/get responses, simulating
+	// partial payload corruption that passes JSON parsing but fails schema
+	// validation.
+	DropField string `json:"drop_field"`
+	// CorruptFieldType sets the named field to a wrong-typed value (a nested
+	// object) in list/get responses, simulating type corruption.
+	CorruptFieldType string `json:"corrupt_field_type"`
 }
 
 func defaultFaults() FaultConfig {
@@ -85,6 +97,36 @@ func (f *FaultManager) Latency() time.Duration {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return time.Duration(f.cfg.LatencyMS) * time.Millisecond
+}
+
+// Hang reports whether the current request should hang (with probability
+// HangPercent) and for how long.
+func (f *FaultManager) Hang() (bool, time.Duration) {
+	f.mu.RLock()
+	ms := f.cfg.HangMS
+	pct := f.cfg.HangPercent
+	f.mu.RUnlock()
+	if ms <= 0 {
+		return false, 0
+	}
+	if pct > 0 && f.rng.Float64() >= pct {
+		return false, 0
+	}
+	return true, time.Duration(ms) * time.Millisecond
+}
+
+// CorruptField returns the field to drop from list/get responses, if any.
+func (f *FaultManager) CorruptField() string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.cfg.DropField
+}
+
+// CorruptFieldType returns the field to corrupt to a wrong type, if any.
+func (f *FaultManager) CorruptFieldType() string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.cfg.CorruptFieldType
 }
 
 func (f *FaultManager) RateLimitPerMin() int {

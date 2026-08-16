@@ -33,11 +33,21 @@ func New(provider, baseURL, token string) (connectors.Adapter, error) {
 // NewRateLimited builds the adapter for a provider with an explicit per-minute
 // request limit (0 disables the client limiter).
 func NewRateLimited(provider, baseURL, token string, perMinute int) (connectors.Adapter, error) {
+	return NewWithTimeout(provider, baseURL, token, DefaultTimeout, perMinute)
+}
+
+// NewWithTimeout builds the adapter for a provider with an explicit per-minute
+// request limit and a caller-provided API timeout. A zero perMinute disables
+// the client limiter.
+func NewWithTimeout(provider, baseURL, token string, timeout time.Duration, perMinute int) (connectors.Adapter, error) {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
 	switch provider {
 	case salesforce.Provider:
-		return salesforce.NewRateLimited(baseURL, token, DefaultTimeout, perMinute), nil
+		return salesforce.NewRateLimited(baseURL, token, timeout, perMinute), nil
 	case hubspot.Provider:
-		return hubspot.NewRateLimited(baseURL, token, DefaultTimeout, perMinute), nil
+		return hubspot.NewRateLimited(baseURL, token, timeout, perMinute), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}

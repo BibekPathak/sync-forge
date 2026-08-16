@@ -107,6 +107,25 @@ already-synced payloads.
 - plus existing `sync_worker_failures_total`, `sync_consumer_errors_total`,
   and the idempotency counters on the worker.
 
+## Fault injection (Phase 10)
+
+The simulator exposes `GET/POST /admin/faults` to script provider failure:
+
+| Fault | Effect |
+|---|---|
+| `failure_rate` (0..1) | N% of API calls return 500 → TRANSIENT → retry |
+| `latency_ms` | artificial latency on every call |
+| `hang_ms` + `hang_percent` | N% of calls sleep past the connector timeout → client timeout → TRANSIENT → retry |
+| `auth_failure` | all calls return 401 → AUTHENTICATION → DLQ |
+| `malformed` | responses are broken JSON → SCHEMA_ERROR → DLQ |
+| `drop_field` / `corrupt_field_type` | list/get responses omit a required field or set it to a wrong type → fails `Validate` (SCHEMA_ERROR) |
+| `rate_limit_per_min` | throttles to N req/min (429 + Retry-After) |
+| `drop_webhooks` / `duplicate_webhooks` / `webhook_delay_ms` / `out_of_order` | webhook delivery mutations |
+
+A scripted chaos integration test (`TestChaosScriptedScenario`) walks healthy →
+hard outage → recover → rate-limit → recover, asserting zero data loss and no
+duplicate destination records at every phase.
+
 ## Interaction with the rest
 
 - Tenant isolation: all of this runs inside one namespace per tenant

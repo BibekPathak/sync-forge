@@ -125,6 +125,16 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				http.Error(sw, `{"error":"injected internal failure"}`, http.StatusInternalServerError)
 				return
 			}
+			// Transient hang: sleep past the caller's request timeout. The
+			// connector's http.Client timeout (registry.DefaultTimeout) turns
+			// this into a TRANSIENT error -> durable retry.
+			if hang, dur := s.Faults.Hang(); hang && dur > 0 {
+				select {
+				case <-time.After(dur):
+				case <-r.Context().Done():
+					return
+				}
+			}
 			if lat := s.Faults.Latency(); lat > 0 {
 				select {
 				case <-time.After(lat):
@@ -318,6 +328,16 @@ func (s *Server) recordJSON(rec *Record) map[string]any {
 	data["version"] = rec.Version
 	data["deleted"] = rec.Deleted
 	data[s.Spec.TimeKey] = rec.UpdatedAt.Format(time.RFC3339)
+
+	// Partial payload corruption: drop a field or set one to a wrong type so
+	// the record passes JSON parsing but fails the adapter's schema
+	// validation (SCHEMA_ERROR).
+	if field := s.Faults.CorruptField(); field != "" {
+		delete(data, field)
+	}
+	if field := s.Faults.CorruptFieldType(); field != "" {
+		data[field] = map[string]any{"corrupted": true}
+	}
 	return data
 }
 

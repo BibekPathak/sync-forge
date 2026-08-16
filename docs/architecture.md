@@ -32,7 +32,15 @@ error classification), a reusable `loadtest` webhook generator, a `cmd/loadgen`
 CLI for driving a running stack, and integration load tests asserting sustained
 throughput with zero data loss plus a burst-under-outage scenario that proves
 the retry machinery converges without duplicate destination records.
-Phase 10 builds on this structure.
+
+Phase 10 (Failure injection & chaos) implemented: the simulator fault suite
+gains transient hangs (timeout → durable retry → recovery, with a configurable
+connector timeout so tests trip it quickly) and partial payload corruption
+(dropped fields / wrong-typed values that pass JSON parsing but fail schema
+validation). A scripted chaos integration test walks healthy → outage →
+recover → rate-limit → recover asserting zero data loss and no duplicates, and
+`scripts/bench.sh` benchmarks the full compose stack (real Redpanda + Postgres)
+at increasing concurrency with metric sampling.
 
 ## Process model
 
@@ -128,7 +136,9 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   `internal/connectors/registry` builds them by name.
 - `internal/simulator` — provider simulator core: in-memory store, cursor
   pagination, token-bucket rate limiter, HMAC-signed webhook dispatch, and a
-  fault-injection manager (`/admin/faults`).
+  fault-injection manager (`/admin/faults`) covering failure rate, latency,
+  auth, malformed payloads, rate limits, webhook drop/duplicate/out-of-order,
+  transient hangs (timeout) and partial payload corruption.
 - `internal/eventbus` — `Bus` interface; Redpanda transport (franz-go, manual
   offset commit) and in-memory transport for tests.
 - `internal/ingestion` — processor that drains `source_events` → topic.

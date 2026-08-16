@@ -288,6 +288,86 @@ func TestFaultAuthFailure(t *testing.T) {
 	}
 }
 
+func TestFaultHang(t *testing.T) {
+	s := testServer(t, 5, "", "")
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	// Hang for 5s with a client that times out in 200ms: the request must
+	// fail on the client side (the server never responds in time).
+	setFaults(t, ts.URL, `{"hang_ms": 5000, "hang_percent": 1.0}`)
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	resp, err := client.Get(ts.URL + "/api/v1/customers")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("expected the request to time out while the provider hangs")
+	}
+
+	// Clearing the hang makes the provider responsive again.
+	setFaults(t, ts.URL, `{}`)
+	resp, err = http.Get(ts.URL + "/api/v1/customers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200 after clearing hang, got %d", resp.StatusCode)
+	}
+}
+
+func TestFaultDropField(t *testing.T) {
+	s := testServer(t, 5, "", "")
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	setFaults(t, ts.URL, `{"drop_field": "last_name"}`)
+	resp, err := http.Get(ts.URL + "/api/v1/customers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Records []map[string]any `json:"records"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Records) == 0 {
+		t.Fatal("expected records")
+	}
+	if _, ok := body.Records[0]["last_name"]; ok {
+		t.Fatalf("expected last_name to be dropped, got %v", body.Records[0])
+	}
+}
+
+func TestFaultCorruptFieldType(t *testing.T) {
+	s := testServer(t, 5, "", "")
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	setFaults(t, ts.URL, `{"corrupt_field_type": "email"}`)
+	resp, err := http.Get(ts.URL + "/api/v1/customers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Records []map[string]any `json:"records"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Records) == 0 {
+		t.Fatal("expected records")
+	}
+	switch v := body.Records[0]["email"].(type) {
+	case map[string]any:
+		// correct: corrupted to a nested object
+	default:
+		t.Fatalf("expected email corrupted to object, got %T", v)
+	}
+}
+
 func TestDuplicateWebhooks(t *testing.T) {
 	count := make(chan int, 100)
 	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

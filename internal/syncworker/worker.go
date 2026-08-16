@@ -34,6 +34,9 @@ type Options struct {
 	// RetryMaxAttempts caps total processing attempts before an event is
 	// escalated to the dead-letter queue.
 	RetryMaxAttempts int
+	// ConnectorTimeout bounds provider API calls. Zero means the registry
+	// default. Shortening it lets tests exercise hang/timeout faults quickly.
+	ConnectorTimeout time.Duration
 }
 
 // Worker consumes canonical sync events, applies them to destination systems,
@@ -76,7 +79,16 @@ func (w *Worker) WithOptions(o Options) *Worker {
 	if o.RetryMaxAttempts > 0 {
 		w.opts.RetryMaxAttempts = o.RetryMaxAttempts
 	}
+	if o.ConnectorTimeout > 0 {
+		w.opts.ConnectorTimeout = o.ConnectorTimeout
+	}
 	return w
+}
+
+// adapterFor builds a provider adapter honoring the configured connector
+// timeout (or the registry default when unset).
+func (w *Worker) adapterFor(provider, baseURL string) (connectors.Adapter, error) {
+	return registry.NewWithTimeout(provider, baseURL, "", w.opts.ConnectorTimeout, 0)
 }
 
 // Handle implements eventbus.Handler. A processing failure is acknowledged
@@ -279,7 +291,7 @@ func (w *Worker) canonicalEntityType(ctx context.Context, ev *events.Event) (str
 	if err != nil {
 		return "", err
 	}
-	srcAdapter, err := registry.New(srcConn.Provider, srcConn.BaseURL, "")
+	srcAdapter, err := w.adapterFor(srcConn.Provider, srcConn.BaseURL)
 	if err != nil {
 		return "", err
 	}
@@ -307,7 +319,7 @@ func (w *Worker) applyUpsert(ctx context.Context, ev *events.Event, entityType s
 	if err != nil {
 		return err
 	}
-	srcAdapter, err := registry.New(srcConn.Provider, srcConn.BaseURL, "")
+	srcAdapter, err := w.adapterFor(srcConn.Provider, srcConn.BaseURL)
 	if err != nil {
 		return err
 	}
@@ -399,7 +411,7 @@ func (w *Worker) applyUpsert(ctx context.Context, ev *events.Event, entityType s
 		if err != nil {
 			return err
 		}
-		dstAdapter, err := registry.New(dstConn.Provider, dstConn.BaseURL, "")
+		dstAdapter, err := w.adapterFor(dstConn.Provider, dstConn.BaseURL)
 		if err != nil {
 			return err
 		}
@@ -474,7 +486,7 @@ func (w *Worker) applyDelete(ctx context.Context, ev *events.Event, entityType s
 		if err != nil {
 			return err
 		}
-		dstAdapter, err := registry.New(dstConn.Provider, dstConn.BaseURL, "")
+		dstAdapter, err := w.adapterFor(dstConn.Provider, dstConn.BaseURL)
 		if err != nil {
 			return err
 		}
@@ -613,7 +625,7 @@ func (w *Worker) applyResolution(ctx context.Context, ev *events.Event, entityTy
 		if err != nil {
 			return err
 		}
-		dstAdapter, err := registry.New(dstConn.Provider, dstConn.BaseURL, "")
+		dstAdapter, err := w.adapterFor(dstConn.Provider, dstConn.BaseURL)
 		if err != nil {
 			return err
 		}
@@ -703,7 +715,7 @@ func (w *Worker) applyReconcileFinding(ctx context.Context, ev *events.Event, en
 	if err != nil {
 		return err
 	}
-	srcAdapter, err := registry.New(srcConn.Provider, srcConn.BaseURL, "")
+	srcAdapter, err := w.adapterFor(srcConn.Provider, srcConn.BaseURL)
 	if err != nil {
 		return err
 	}
@@ -846,7 +858,7 @@ func (w *Worker) applyAdoptProvider(ctx context.Context, ev *events.Event, entit
 		if err != nil {
 			return err
 		}
-		dstAdapter, err := registry.New(dstConn.Provider, dstConn.BaseURL, "")
+		dstAdapter, err := w.adapterFor(dstConn.Provider, dstConn.BaseURL)
 		if err != nil {
 			return err
 		}
