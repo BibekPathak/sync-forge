@@ -66,6 +66,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	shutdownTracing, err := observability.InitTracing(ctx, "syncforge-api", cfg.OTLPEndpoint)
+	if err != nil {
+		logger.Error("tracing init failed", "error", err)
+		os.Exit(1)
+	}
+	defer shutdownTracing()
+
 	srv := api.New(cfg, database, c, metrics, logger)
 
 	if cfg.SeedAcme {

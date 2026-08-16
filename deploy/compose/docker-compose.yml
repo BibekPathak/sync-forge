@@ -24,6 +24,7 @@ x-go-service: &go-service
     SYNCFORGE_SEED_HUBSPOT_URL: http://sim-hubspot:9082
     SYNCFORGE_SEED_SALESFORCE_WEBHOOK_SECRET: sfs-dev-secret
     SYNCFORGE_SEED_HUBSPOT_WEBHOOK_SECRET: sfh-dev-secret
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
 
 services:
   postgres:
@@ -124,12 +125,26 @@ services:
     image: prom/prometheus:latest
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/rules.yml:/etc/prometheus/rules.yml:ro
       - promdata:/prometheus
     ports:
       - "9090:9090"
     depends_on:
       - api
       - engine
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - ../otel-collector/config.yml:/etc/otelcol/config.yml:ro
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
 
   grafana:
     image: grafana/grafana:11.1.0

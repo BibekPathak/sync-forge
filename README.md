@@ -7,10 +7,12 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 7 (RBAC) — build in progress.** Bidirectional
+> **Status: Phase 8 (Observability) — build in progress.** Bidirectional
 > synchronization, durable retries + dead-letter queue, conflict detection and
-> resolution, reconciliation (auto/manual repairs), and role-based API key
-> access control with key minting/revocation. See
+> resolution, reconciliation (auto/manual repairs), role-based API key access
+> control, and a full observability stack: sync-pipeline Grafana dashboard,
+> Prometheus alerting rules, and optional OpenTelemetry tracing (OTLP → Jaeger)
+> across the API and worker apply path. See
 > [docs/architecture.md](docs/architecture.md) and
 > [docs/failure-recovery.md](docs/failure-recovery.md).
 
@@ -304,7 +306,7 @@ Tests that currently exist:
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 7)
+## 9. Known limitations (Phase 8)
 
 - Identity resolution is email-only and single-match; ambiguous or missing
   emails fall back to a new canonical record.
@@ -314,9 +316,11 @@ Tests that currently exist:
 - RBAC is role-based API-key enforcement (VIEWER/DEVELOPER/OPERATOR/ADMIN)
   with key minting, listing, and revocation; there is no per-user login or
   multi-factor flow yet.
+- Tracing is optional (disabled without `OTEL_EXPORTER_OTLP_ENDPOINT`); the
+  compose stack ships an OpenTelemetry collector + Jaeger for the demo.
 - Simulated providers keep state in memory (intentional: they are external
   systems; their durability isn't SyncForge's concern).
 
 ## 10. Next phases
 
-Observability, failure injection, and benchmarking.
+Failure injection and benchmarking.

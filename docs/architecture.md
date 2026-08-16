@@ -19,7 +19,13 @@ Phase 7 (RBAC) implemented: every tenant-scoped endpoint is gated by a role
 rank (VIEWER < DEVELOPER < OPERATOR < ADMIN), API keys can be minted, listed,
 and revoked via the API (raw key shown once), and tenant management moved from
 a fixed bootstrap key to the ADMIN role.
-Phases 8–10 build on this structure.
+
+Phase 8 (Observability) implemented: a Grafana dashboard for the full sync
+pipeline (events, processing latency, destination writes, retries, DLQ,
+duplicates/stale/loop drops, conflicts, reconciliation), Prometheus alerting
+rules, and optional OpenTelemetry tracing of the API and worker apply path
+(OTLP → collector → Jaeger, disabled without an endpoint).
+Phases 9–10 build on this structure.
 
 ## Process model
 
@@ -140,8 +146,10 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
 - `internal/api` — HTTP handlers, auth middleware (role-ranked API keys),
   webhook gateway.
 - `internal/events` — immutable canonical event contract + partition key.
-- `internal/observability` — OpenTelemetry SDK wiring, Prometheus exporter,
-  per-service HTTP + synchronization metrics (`sync_*`).
+- `internal/observability` — OpenTelemetry SDK wiring: Prometheus-exporter
+  metrics (`http_*`, `sync_*`), optional OTLP tracing (`InitTracing`), and
+  per-service HTTP + synchronization metrics. `deploy/` ships a Grafana
+  dashboard, Prometheus alert rules, and an OTel collector + Jaeger.
 
 ## Security model
 

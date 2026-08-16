@@ -8,7 +8,11 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"syncforge/internal/backoff"
 	"syncforge/internal/conflict"
@@ -99,6 +103,17 @@ func (w *Worker) Handle(ctx context.Context, _ string, value []byte) error {
 // event in processed_events before doing work means duplicate deliveries are
 // no-ops.
 func (w *Worker) Process(ctx context.Context, ev *events.Event) error {
+	ctx, span := otel.Tracer("syncworker").Start(ctx, "worker.process",
+		trace.WithAttributes(
+			attribute.String("event_id", ev.EventID),
+			attribute.String("source", ev.Source),
+			attribute.String("entity_type", ev.EntityType),
+			attribute.String("entity_id", ev.EntityID),
+			attribute.String("event_type", string(ev.EventType)),
+			attribute.String("tenant_id", ev.TenantID),
+		))
+	defer span.End()
+
 	start := time.Now()
 	w.metrics.EventsTotal.Add(ctx, 1)
 
@@ -175,6 +190,7 @@ func (w *Worker) Process(ctx context.Context, ev *events.Event) error {
 
 	w.metrics.EventsSuccess.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(ev.Source)))
 	w.metrics.ProcessingDuration.Record(ctx, time.Since(start).Seconds())
+	trace.SpanFromContext(ctx).SetStatus(codes.Ok, "applied")
 	w.log.Info("event processed",
 		"event_id", ev.EventID, "source", ev.Source, "entity", ev.EntityID, "type", ev.EventType)
 	return nil
@@ -183,6 +199,9 @@ func (w *Worker) Process(ctx context.Context, ev *events.Event) error {
 // fail marks an event as failed and releases its idempotency claim so the
 // durable retry machinery (Phase 4) can re-run it.
 func (w *Worker) fail(ctx context.Context, ev *events.Event, cause error) {
+	span := trace.SpanFromContext(ctx)
+	span.RecordError(cause)
+	span.SetStatus(codes.Error, cause.Error())
 	w.metrics.EventsFailed.Add(ctx, 1)
 	_ = store.ReleaseProcessedEvent(ctx, w.db.App, ev.TenantID, ev.Source, ev.EventID)
 	if err := store.SetSourceEventStatus(ctx, w.db.App, ev.TenantID, ev.EventID, "validated", "failed"); err != nil {

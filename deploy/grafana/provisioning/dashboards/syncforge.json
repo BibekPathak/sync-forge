@@ -5,11 +5,22 @@
   "id": null,
   "panels": [
     {
+      "id": 100,
+      "title": "API",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
       "id": 1,
       "title": "HTTP requests / sec",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
       "targets": [
         {
           "expr": "sum(rate(http_requests_total[1m]))",
@@ -21,8 +32,12 @@
       "id": 2,
       "title": "HTTP latency p95 (ms)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" },
+        "overrides": []
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1m])) by (le)) * 1000",
@@ -34,7 +49,7 @@
       "id": 3,
       "title": "HTTP requests by status",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
@@ -47,12 +62,252 @@
       "id": 4,
       "title": "In-flight requests",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
           "expr": "sum(http_inflight_requests)",
           "legendFormat": "inflight"
+        }
+      ]
+    },
+    {
+      "id": 200,
+      "title": "Event pipeline",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 }
+    },
+    {
+      "id": 201,
+      "title": "Events processed / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_events_total[1m]))",
+          "legendFormat": "all events"
+        }
+      ]
+    },
+    {
+      "id": 202,
+      "title": "Events success vs failed / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_events_success_total[1m])) by (source)",
+          "legendFormat": "success {{source}}"
+        },
+        {
+          "expr": "sum(rate(sync_events_failed_total[1m]))",
+          "legendFormat": "failed",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 203,
+      "title": "Processing duration p95 (ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(sync_processing_duration_seconds_bucket[1m])) by (le)) * 1000",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 204,
+      "title": "Destination writes / sec by source",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_destination_writes_total[1m])) by (source)",
+          "legendFormat": "{{source}}"
+        }
+      ]
+    },
+    {
+      "id": 205,
+      "title": "Reliability: retries scheduled / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_retry_scheduled_total[1m]))",
+          "legendFormat": "retries"
+        }
+      ]
+    },
+    {
+      "id": 206,
+      "title": "DLQ entries / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_dlq_events_total[1m]))",
+          "legendFormat": "dlq"
+        }
+      ]
+    },
+    {
+      "id": 300,
+      "title": "Data quality",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 }
+    },
+    {
+      "id": 301,
+      "title": "Duplicates deduplicated / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_duplicates_total[1m]))",
+          "legendFormat": "duplicates"
+        }
+      ]
+    },
+    {
+      "id": 302,
+      "title": "Stale (out-of-order) events / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_stale_events_total[1m]))",
+          "legendFormat": "stale"
+        }
+      ]
+    },
+    {
+      "id": 303,
+      "title": "Loops prevented (echo drops) / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_loop_events_prevented_total[1m]))",
+          "legendFormat": "loops"
+        }
+      ]
+    },
+    {
+      "id": 400,
+      "title": "Conflicts & reconciliation",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 }
+    },
+    {
+      "id": 401,
+      "title": "Conflicts detected vs resolved / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 44 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_conflicts_detected_total[1m]))",
+          "legendFormat": "detected"
+        },
+        {
+          "expr": "sum(rate(sync_conflicts_resolved_total[1m]))",
+          "legendFormat": "resolved",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 402,
+      "title": "Reconcile runs",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 44 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(sync_reconcile_runs_total[5m]))",
+          "legendFormat": "runs (5m)"
+        }
+      ]
+    },
+    {
+      "id": 403,
+      "title": "Reconcile findings vs repairs / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 44 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sync_reconcile_findings_total[1m]))",
+          "legendFormat": "findings"
+        },
+        {
+          "expr": "sum(rate(sync_reconcile_repairs_total[1m]))",
+          "legendFormat": "repairs",
+          "refId": "B"
         }
       ]
     }
@@ -66,5 +321,5 @@
   "timezone": "",
   "title": "SyncForge Operations",
   "uid": "syncforge-ops",
-  "version": 1
+  "version": 2
 }

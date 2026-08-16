@@ -6,8 +6,10 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Router assembles the API HTTP surface with middleware.
@@ -69,11 +71,19 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	return s.middleware(mux)
 }
 
-// middleware applies recover, request logging, metrics and CORS.
+// middleware applies recover, request logging, metrics, tracing and CORS.
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		ctx, span := otel.Tracer("api").Start(r.Context(), "http.request",
+			trace.WithAttributes(
+				attribute.String("http.request.method", r.Method),
+				attribute.String("url.path", r.URL.Path),
+			))
+		defer span.End()
+		r = r.WithContext(ctx)
 
 		s.metrics.HTTPInflight.Add(r.Context(), 1)
 		defer s.metrics.HTTPInflight.Add(r.Context(), -1)
@@ -89,6 +99,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				attribute.String("path", r.URL.Path),
 				attribute.String("status", strconv.Itoa(sw.status)),
 			}
+			span.SetAttributes(attribute.Int("http.response.status_code", sw.status))
 			s.metrics.HTTPRequests.Add(r.Context(), 1, metric.WithAttributes(attrs...))
 			s.metrics.HTTPDuration.Record(r.Context(), dur, metric.WithAttributes(attrs...))
 			s.log.Info("http",

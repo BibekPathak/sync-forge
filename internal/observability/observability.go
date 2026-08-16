@@ -8,10 +8,12 @@ import (
 	promcli "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
@@ -42,6 +44,35 @@ func InitMetrics(ctx context.Context, service string) (http.Handler, func(), err
 		_ = provider.Shutdown(ctx)
 	}
 	return promhttp.Handler(), shutdown, nil
+}
+
+// InitTracing configures the OpenTelemetry trace provider. When endpoint is
+// empty a no-op provider is installed, so tracing is a pure opt-in feature
+// (enabled by OTEL_EXPORTER_OTLP_ENDPOINT). Returns a shutdown func.
+func InitTracing(ctx context.Context, service, endpoint string) (func(), error) {
+	noop := func() {}
+	if endpoint == "" {
+		otel.SetTracerProvider(sdktrace.NewTracerProvider())
+		return noop, nil
+	}
+	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
+	if err != nil {
+		return noop, err
+	}
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceName(service),
+	)
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+	)
+	otel.SetTracerProvider(provider)
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = provider.Shutdown(shutdownCtx)
+	}, nil
 }
 
 // ServiceMetrics centralizes the counters/histograms every service records.

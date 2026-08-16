@@ -1,0 +1,81 @@
+groups:
+  - name: syncforge-engine
+    rules:
+      - alert: SyncForgeEventFailureRateHigh
+        expr: |
+          sum(rate(sync_events_failed_total[5m]))
+          /
+          (sum(rate(sync_events_total[5m])) > 0)
+          > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High sync event failure rate"
+          description: "{{ $value | humanizePercentage }} of sync events failed over the last 10 minutes (threshold 5%)."
+
+      - alert: SyncForgeDLQGrowth
+        expr: |
+          increase(sync_dlq_events_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Events entering the dead-letter queue"
+          description: "Sync events are exhausting retries or failing permanently ({{ $value }} in the last 10 minutes). Operator review required."
+
+      - alert: SyncForgeRetryBacklog
+        expr: |
+          (sum(rate(sync_retry_scheduled_total[5m])) - sum(rate(sync_events_success_total[5m])))
+          > 0.1
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "Retries outpacing successful applies"
+          description: "Retries are being scheduled faster than events succeed, indicating a persistent downstream fault."
+
+      - alert: SyncForgeReconcileDriftSpike
+        expr: |
+          increase(sync_reconcile_findings_total[10m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reconciliation finding spike"
+          description: "{{ $value }} reconcile findings were detected in the last 10 minutes; systems may be diverging."
+
+      - alert: SyncForgeConflictSpike
+        expr: |
+          increase(sync_conflicts_detected_total[10m]) > 100
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Conflict detection spike"
+          description: "{{ $value }} conflicts detected in the last 10 minutes; concurrent edits may be frequent."
+
+      - alert: SyncForgeNoEventsProcessed
+        expr: |
+          sum(rate(sync_events_total[10m])) == 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No sync events processed"
+          description: "The sync engine processed zero events in the last 30 minutes. The worker may be stalled or disconnected from the event bus."
+
+  - name: syncforge-api
+    rules:
+      - alert: SyncForgeAPIErrorRateHigh
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          (sum(rate(http_requests_total[5m])) > 0)
+          > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API 5xx rate"
+          description: "{{ $value | humanizePercentage }} of API requests returned 5xx over the last 10 minutes (threshold 10%)."
