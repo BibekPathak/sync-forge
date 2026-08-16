@@ -7,12 +7,12 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 8 (Observability) — build in progress.** Bidirectional
-> synchronization, durable retries + dead-letter queue, conflict detection and
-> resolution, reconciliation (auto/manual repairs), role-based API key access
-> control, and a full observability stack: sync-pipeline Grafana dashboard,
-> Prometheus alerting rules, and optional OpenTelemetry tracing (OTLP → Jaeger)
-> across the API and worker apply path. See
+> **Status: Phase 9 (Benchmarking & load testing) — build in progress.**
+> Bidirectional synchronization, durable retries + dead-letter queue, conflict
+> detection and resolution, reconciliation (auto/manual repairs), role-based
+> API key access control, a full observability stack (Grafana dashboard,
+> Prometheus alerts, OTLP tracing), Go benchmarks for the hot pure-leaf paths,
+> and a webhook load generator + load/chaos integration tests. See
 > [docs/architecture.md](docs/architecture.md) and
 > [docs/failure-recovery.md](docs/failure-recovery.md).
 
@@ -306,7 +306,7 @@ Tests that currently exist:
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 8)
+## 9. Known limitations (Phase 9)
 
 - Identity resolution is email-only and single-match; ambiguous or missing
   emails fall back to a new canonical record.
@@ -318,9 +318,15 @@ Tests that currently exist:
   multi-factor flow yet.
 - Tracing is optional (disabled without `OTEL_EXPORTER_OTLP_ENDPOINT`); the
   compose stack ships an OpenTelemetry collector + Jaeger for the demo.
+- Load tests run in-process (in-memory bus, embedded sims); they measure the
+  pipeline's steady-state throughput and correctness under load, not a
+  production network profile. `cmd/loadgen` fires at a running stack for
+  end-to-end numbers.
 - Simulated providers keep state in memory (intentional: they are external
   systems; their durability isn't SyncForge's concern).
 
 ## 10. Next phases
 
-Failure injection and benchmarking.
+Failure injection beyond the current fault suite (transient hangs, partial
+payload corruption, scripted chaos scenarios) and production-scale
+benchmarking.

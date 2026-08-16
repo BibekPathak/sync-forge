@@ -25,7 +25,14 @@ pipeline (events, processing latency, destination writes, retries, DLQ,
 duplicates/stale/loop drops, conflicts, reconciliation), Prometheus alerting
 rules, and optional OpenTelemetry tracing of the API and worker apply path
 (OTLP → collector → Jaeger, disabled without an endpoint).
-Phases 9–10 build on this structure.
+
+Phase 9 (Benchmarking & load testing) implemented: Go benchmarks for the hot
+pure-leaf paths (classification, conflict detect/resolve/merge, backoff,
+error classification), a reusable `loadtest` webhook generator, a `cmd/loadgen`
+CLI for driving a running stack, and integration load tests asserting sustained
+throughput with zero data loss plus a burst-under-outage scenario that proves
+the retry machinery converges without duplicate destination records.
+Phase 10 builds on this structure.
 
 ## Process model
 
@@ -150,6 +157,8 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   metrics (`http_*`, `sync_*`), optional OTLP tracing (`InitTracing`), and
   per-service HTTP + synchronization metrics. `deploy/` ships a Grafana
   dashboard, Prometheus alert rules, and an OTel collector + Jaeger.
+- `load_test` — reusable webhook load generator (throughput/latency reporting)
+  used by the integration load tests and the `cmd/loadgen` CLI.
 
 ## Security model
 
