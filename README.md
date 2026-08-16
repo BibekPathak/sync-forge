@@ -235,7 +235,8 @@ provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
 - Webhook gateway: signature validation → durable, idempotent ingestion.
 - API: `/health`, `/api/v1/tenants`, `/api/v1/connections`,
   `/api/v1/metrics`, `/webhooks/{provider}/{tenant_slug}`.
-- Auth: API keys (hashed at rest) + bootstrap key for tenant management.
+- Auth: API keys (hashed at rest) with role-ranked access control
+  (VIEWER/DEVELOPER/OPERATOR/ADMIN).
 - Observability: OpenTelemetry metrics via Prometheus, Grafana dashboard.
 - Dashboard: Next.js static export + proxy.
 
@@ -283,7 +284,7 @@ Tests that currently exist:
   429 classification.
 - **Integration**: cross-tenant read/write isolation under RLS, fail-closed
   reads without a tenant context, signed webhook ingest + duplicate suppression,
-  API auth (API key / bootstrap).
+  API auth (API key with role enforcement).
 - **Pipeline (integration, in-process)**: webhook → ingestion → bus → worker →
   destination create/update/delete; **100 duplicate events → exactly 1
   destination mutation**; canonical provider-id mapping + source versions;

@@ -27,8 +27,8 @@ for i in $(seq 1 60); do
 done
 curl -fsS "$API/health" | python3 -m json.tool
 
-log "Tenants (bootstrap key)"
-curl -fsS -H "X-Bootstrap-Key: syncforge-admin-dev" "$API/api/v1/tenants" | python3 -m json.tool
+log "Tenants (ADMIN API key)"
+curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/tenants" | python3 -m json.tool
 
 log "Connections for Acme (API key)"
 curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/connections" | python3 -m json.tool
