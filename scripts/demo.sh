@@ -16,6 +16,30 @@ USER_PASS="syncforge-demo"
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
+# wait_for_contact polls the provider until a record with the given email and
+# id-field appears (the pipeline settles asynchronously: webhook -> Redpanda ->
+# worker -> destination). The full stack has real latency, so we poll instead
+# of sleeping a fixed amount.
+wait_for_contact() { # base_url list_path id_field email
+  local base="$1" list="$2" idfield="$3" email="$4"
+  for i in $(seq 1 30); do
+    local id
+    id=$(curl -fsS "$base$list" 2>/dev/null | python3 -c "
+import sys,json
+try:
+    recs=json.load(sys.stdin)['records']
+except Exception:
+    recs=[]
+for c in recs:
+    if c.get('emailAddress')=='$email' or c.get('email')=='$email':
+        print(c.get('$idfield') or c.get('id')); break
+")
+    if [ -n "$id" ]; then printf '%s' "$id"; return 0; fi
+    sleep 2
+  done
+  printf ''
+}
+
 log "Starting SyncForge stack"
 $COMPOSE up -d
 # Recreate api/engine so idempotent seeding re-runs, and reset the in-memory
@@ -55,36 +79,80 @@ REC=$(curl -fsS -X POST "$SF/api/v1/customers" -H "Content-Type: application/jso
 ID=$(echo "$REC" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
 echo "created Salesforce customer: $ID ($EMAIL)"
 echo "Waiting for the pipeline (webhook -> Redpanda -> worker -> HubSpot)..."
-sleep 4
+HUB=$(wait_for_contact "http://localhost:9082" "/api/v1/contacts?limit=1000" "contact_id" "$EMAIL")
+if [ -z "$HUB" ]; then echo "ERROR: customer never reached HubSpot"; exit 1; fi
+echo "synced record: $HUB ($EMAIL)"
 
 log "Ingested source events (durable, signed, idempotent)"
 docker exec syncforge-postgres-1 psql -U postgres -d syncforge -c \
-  "SELECT source, entity_type, entity_id, event_type, source_version, status FROM source_events WHERE status IN ('received','validated','failed') ORDER BY received_at;"
+  "SELECT source, entity_type, entity_id, event_type, source_version, status FROM source_events ORDER BY received_at DESC LIMIT 10;"
 
 log "Canonical records (provider-id mapping, source versions)"
 docker exec syncforge-postgres-1 psql -U postgres -d syncforge -c \
   "SELECT entity_id, version, provider_ids, fields->>'email' AS email FROM canonical_records WHERE fields->>'email'='$EMAIL';"
 
-log "HubSpot received the new customer"
-HUB=$(curl -fsS "http://localhost:9082/api/v1/contacts?limit=1000" | python3 -c "
-import sys,json
-recs=json.load(sys.stdin)['records']
-for c in recs:
-    if c.get('emailAddress')=='$EMAIL': print(c['contact_id']); break
-")
-echo "synced record: $HUB ($EMAIL)"
-
 log "Bidirectional: edit the HubSpot contact -> propagates back to Salesforce"
 curl -fsS -X PATCH "http://localhost:9082/api/v1/contacts/$HUB" -H "Content-Type: application/json" -d '{"phoneNumber":"+1-555-9999"}' >/dev/null
 echo "Waiting for reverse propagation..."
-sleep 4
-curl -fsS "http://localhost:9081/api/v1/customers/$ID" | python3 -c "
+for i in $(seq 1 30); do
+  PH=$(curl -fsS "$SF/api/v1/customers/$ID" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('phone',''))" 2>/dev/null || true)
+  if [ "$PH" = "+1-555-9999" ]; then break; fi
+  sleep 2
+done
+curl -fsS "$SF/api/v1/customers/$ID" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 print('Salesforce', d['id'], 'phone now:', d['phone'], '(should be +1-555-9999)')
 "
 echo "Loop prevention check (echo webhooks recognized & dropped):"
 curl -fsS "http://localhost:8081/metrics" | grep -E '^sync_loop_events_prevented_total' | head -1
+
+log "Conflicts: switch to manual strategy, then a concurrent edit parks a CONFLICT_PENDING"
+docker exec syncforge-postgres-1 psql -U postgres -d syncforge -c \
+  "UPDATE sync_policies SET conflict_strategy='manual' WHERE entity='customer' AND source='hubspot';" >/dev/null
+CONF_EMAIL="conflict-$(date +%s)@example.com"
+REC=$(curl -fsS -X POST "$SF/api/v1/customers" -H "Content-Type: application/json" -d "{\"first_name\":\"Conf\",\"last_name\":\"Torn\",\"email\":\"$CONF_EMAIL\",\"phone\":\"+1-555-0000\",\"company\":\"Acme\"}")
+CFID=$(echo "$REC" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+echo "created Salesforce customer: $CFID ($CONF_EMAIL)"
+echo "Waiting for initial propagation to HubSpot..."
+CHUB=$(wait_for_contact "http://localhost:9082" "/api/v1/contacts?limit=1000" "contact_id" "$CONF_EMAIL")
+if [ -z "$CHUB" ]; then echo "ERROR: conflict customer never reached HubSpot"; exit 1; fi
+echo "hubspot copy: $CHUB"
+
+# Concurrent edit: Salesforce rewrites last_name, then HubSpot rewrites the
+# same field before the Salesforce write settles -> a field-level conflict.
+curl -fsS -X PATCH "$SF/api/v1/customers/$CFID" -H "Content-Type: application/json" -d '{"last_name":"Side-A"}' >/dev/null
+curl -fsS -X PATCH "http://localhost:9082/api/v1/contacts/$CHUB" -H "Content-Type: application/json" -d '{"lastName":"Side-B"}' >/dev/null
+echo "Waiting for the concurrent edits to collide..."
+for i in $(seq 1 30); do
+  CONFLICTS=$(curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/conflicts?status=CONFLICT_PENDING&limit=10")
+  CN=$(echo "$CONFLICTS" | python3 -c "import sys,json;print(json.load(sys.stdin)['count'])")
+  if [ "$CN" -gt 0 ]; then break; fi
+  sleep 2
+done
+CONFLICTS=$(curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/conflicts?status=CONFLICT_PENDING&limit=10")
+echo "$CONFLICTS" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('  pending conflicts:', d['count'])
+for c in d['items'][:5]:
+    print('   -', c['id'], c['entity_id'], c['source_a'], 'vs', c['source_b'], '['+c['status']+']')
+"
+CID=$(echo "$CONFLICTS" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['items'][0]['id'] if d['items'] else '')")
+if [ -n "$CID" ]; then
+  echo "Resolving conflict $CID (side b = the HubSpot edit)..."
+  curl -fsS -X POST "$API/api/v1/conflicts/$CID/resolve" -H "Content-Type: application/json" -H "X-API-Key: $KEY" \
+    -d '{"side":"b"}' | python3 -m json.tool
+  echo "Conflict resolution audited:"
+  curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/audit?action=conflict.resolve&limit=5" | python3 -c "
+import sys,json
+for a in json.load(sys.stdin)['items']:
+    print('   -', a['actor'], a['action'], a['resource_id'], a.get('metadata',{}))
+"
+  # Restore the demo policy for the remainder of the script.
+  docker exec syncforge-postgres-1 psql -U postgres -d syncforge -c \
+    "UPDATE sync_policies SET conflict_strategy='field_merge' WHERE entity='customer' AND source='hubspot';" >/dev/null
+fi
 
 log "Reconciliation: run a sweep over Salesforce and wait for it to complete"
 RUN=$(curl -fsS -X POST "$API/api/v1/reconciliations" -H "Content-Type: application/json" -H "X-API-Key: $KEY" \

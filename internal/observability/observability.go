@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	promcli "github.com/prometheus/client_golang/prometheus"
@@ -54,6 +55,14 @@ func InitTracing(ctx context.Context, service, endpoint string) (func(), error) 
 	if endpoint == "" {
 		otel.SetTracerProvider(sdktrace.NewTracerProvider())
 		return noop, nil
+	}
+	// OTLP over HTTP routes each signal to a path under the endpoint; the
+	// exporter posts traces to {endpoint}/v1/traces. Append the signal path
+	// when the configured endpoint does not already carry one, so a bare
+	// "http://collector:4318" reaches the receiver instead of 404ing.
+	endpoint = strings.TrimSuffix(endpoint, "/")
+	if !strings.HasSuffix(endpoint, "/v1/traces") {
+		endpoint += "/v1/traces"
 	}
 	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
 	if err != nil {

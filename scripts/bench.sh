@@ -40,6 +40,13 @@ log "Seeding simulators with $EVENTS records"
 curl -fsS -X POST "http://localhost:9081/admin/seed" -H "Content-Type: application/json" -d "{\"count\": $EVENTS}" >/dev/null
 curl -fsS -X POST "http://localhost:9082/admin/seed" -H "Content-Type: application/json" -d "{\"count\": $EVENTS}" >/dev/null
 
+# Lift the providers' rate limits so the benchmark measures the pipeline, not
+# the simulators' documented per-minute caps (compose defaults SF 100 / HS 50).
+curl -fsS -X POST "http://localhost:9081/admin/faults" -H "Content-Type: application/json" \
+  -d '{"rate_limit_per_min": 100000}' >/dev/null
+curl -fsS -X POST "http://localhost:9082/admin/faults" -H "Content-Type: application/json" \
+  -d '{"rate_limit_per_min": 100000}' >/dev/null
+
 log "Benchmark: $EVENTS events/run, concurrency 1 -> $MAX_CONC"
 printf '%-10s %-12s %-12s %-12s %-12s\n' "conc" "accepted" "ev/s" "p95(ms)" "p99(ms)"
 for CONC in 1 2 4 8 16 32 "$MAX_CONC"; do
@@ -54,6 +61,15 @@ for CONC in 1 2 4 8 16 32 "$MAX_CONC"; do
   # Give the worker a moment to drain the in-flight page before the next run
   # so destinations converge and the metrics reflect a steady pipeline.
   sleep 3
+done
+
+# Let the retry queue drain so the final metrics reflect a converged pipeline.
+echo "Waiting for the pipeline to settle (retry queue draining)..."
+for i in $(seq 1 60); do
+  N=$(docker exec syncforge-postgres-1 psql -U postgres -d syncforge -tAc \
+    "SELECT count(*) FROM retry_queue" 2>/dev/null || echo 0)
+  if [ "$N" = "0" ]; then break; fi
+  sleep 2
 done
 
 log "Sync engine metrics after the run"
