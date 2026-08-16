@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# SyncForge demo script (Phase 1: foundation).
-# Brings up the stack and exercises: tenant seed, connections API, and a
-# signed provider webhook flowing into the ingestion gateway.
+# SyncForge demo script (full-stack walkthrough).
+# Brings up the stack and exercises the whole feature set end to end:
+#   1. seeded tenant + connections, 2. per-user login (RBAC),
+#   3. signed webhook -> pipeline -> HubSpot (bidirectional propagation),
+#   4. reconciliation sweep + findings, 5. audit log + writes ledger + DLQ reads.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -9,6 +11,8 @@ COMPOSE="docker compose -f deploy/compose/docker-compose.yml"
 API=http://localhost:8080
 KEY="sfk_acme_dev"
 SF=http://localhost:9081
+USER_EMAIL="admin@acme.dev"
+USER_PASS="syncforge-demo"
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
@@ -29,6 +33,14 @@ curl -fsS "$API/health" | python3 -m json.tool
 
 log "Tenants (ADMIN API key)"
 curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/tenants" | python3 -m json.tool
+
+log "Per-user login (RBAC): POST /api/v1/auth/login"
+LOGIN=$(curl -fsS -X POST "$API/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d "{\"tenant_slug\":\"acme\",\"email\":\"$USER_EMAIL\",\"password\":\"$USER_PASS\"}")
+UTOKEN=$(echo "$LOGIN" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+echo "$LOGIN" | python3 -c "import sys,json;d=json.load(sys.stdin);print('logged in as', d['user']['email'], 'role', d['user']['role'], '(token', d['token'][:12]+'...', ')')"
+echo "Reading connections with the user session token:"
+curl -fsS -H "Authorization: Bearer $UTOKEN" "$API/api/v1/connections" | python3 -c "import sys,json;print('  connections:', len(json.load(sys.stdin)['connections']))"
 
 log "Connections for Acme (API key)"
 curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/connections" | python3 -m json.tool
@@ -73,6 +85,51 @@ print('Salesforce', d['id'], 'phone now:', d['phone'], '(should be +1-555-9999)'
 "
 echo "Loop prevention check (echo webhooks recognized & dropped):"
 curl -fsS "http://localhost:8081/metrics" | grep -E '^sync_loop_events_prevented_total' | head -1
+
+log "Reconciliation: run a sweep over Salesforce and wait for it to complete"
+RUN=$(curl -fsS -X POST "$API/api/v1/reconciliations" -H "Content-Type: application/json" -H "X-API-Key: $KEY" \
+  -d '{"source":"salesforce","mode":"manual"}')
+RUN_ID=$(echo "$RUN" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+echo "reconciliation run: $RUN_ID"
+for i in $(seq 1 30); do
+  ST=$(curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/reconciliations/$RUN_ID" | python3 -c "import sys,json;print(json.load(sys.stdin)['status'])")
+  if [ "$ST" = "completed" ] || [ "$ST" = "failed" ]; then break; fi
+  sleep 2
+done
+curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/reconciliations/$RUN_ID" | python3 -m json.tool
+echo "Findings (if any diverged):"
+curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/reconciliations/$RUN_ID/findings?limit=20" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('  findings:', d['count'])
+for f in d['items'][:5]:
+    print('   -', f['kind'], f['provider_id'], '->', f['direction'], '['+f['status']+']')
+"
+
+log "Audit trail (operator + security actions, incl. the login above)"
+curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/audit?limit=10" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('  events:', d['count'])
+for a in d['items'][:10]:
+    print('   -', a['created_at'][:19], a['actor'], a['action'], a['resource'], a.get('resource_id',''))
+"
+
+log "Applied-writes ledger (every destination mutation)"
+curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/operations?limit=10" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('  writes:', d['count'])
+for o in d['items'][:10]:
+    print('   -', o['created_at'][:19], o['entity_id'], '->', o['target_source'], 'v'+str(o['applied_version']), o['fingerprint'][:16])
+"
+
+log "Dead-letter queue (should be empty in a healthy demo)"
+curl -fsS -H "X-API-Key: $KEY" "$API/api/v1/dlq?limit=10" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('  dlq entries:', d['count'])
+"
 
 log "Dashboard:  http://localhost:3001"
 log "Prometheus: http://localhost:9090"

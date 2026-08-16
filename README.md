@@ -247,7 +247,8 @@ provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
 - Dashboard: Next.js static export + proxy. Read-only operational view:
   health, connections, pending conflicts, reconciliation runs + findings,
   dead-letter queue, recent sync events, sync jobs, the applied-writes ledger,
-  and the audit log.
+  and the audit log. Authenticates via the demo user's login (session token),
+  not a static API key.
 
 ## 7. Running it
 
@@ -275,8 +276,10 @@ connections, API key **`sfk_acme_dev`**, and a demo user
 
 ```bash
 ./scripts/demo.sh
-# 1. health + seeded tenants/connections
-# 2. update a Salesforce record → signed webhook → gateway → source_events
+# 1. seeded tenant + connections + per-user login (RBAC)
+# 2. signed webhook → pipeline → HubSpot, bidirectional propagation
+# 3. reconciliation sweep + findings
+# 4. audit log + applied-writes ledger + DLQ reads
 ```
 
 ## 8. Testing
