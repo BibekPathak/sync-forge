@@ -244,7 +244,10 @@ provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
   both tenant-scoped and readable via `GET /api/v1/audit` and
   `GET /api/v1/operations`.
 - Observability: OpenTelemetry metrics via Prometheus, Grafana dashboard.
-- Dashboard: Next.js static export + proxy.
+- Dashboard: Next.js static export + proxy. Read-only operational view:
+  health, connections, pending conflicts, reconciliation runs + findings,
+  dead-letter queue, recent sync events, sync jobs, the applied-writes ledger,
+  and the audit log.
 
 ## 7. Running it
 
