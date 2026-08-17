@@ -29,6 +29,7 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.Handle("POST /api/v1/auth/mfa/enroll", s.requireUser(http.HandlerFunc(s.handleMFAEnroll)))
 	mux.Handle("POST /api/v1/auth/mfa/confirm", s.requireUser(http.HandlerFunc(s.handleMFAConfirm)))
 	mux.Handle("POST /api/v1/auth/mfa/disable", s.requireUser(http.HandlerFunc(s.handleMFADisable)))
+	mux.Handle("POST /api/v1/auth/mfa/backup-codes", s.requireUser(http.HandlerFunc(s.handleMFABackupCodes)))
 
 	// tenant management (platform provisioning: ADMIN role only)
 	mux.Handle("POST /api/v1/tenants", s.requireRole("ADMIN")(http.HandlerFunc(s.handleCreateTenant)))

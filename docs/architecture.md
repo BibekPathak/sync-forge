@@ -63,6 +63,13 @@ confirm it with a code to enable it, and disable it with a code. When enabled,
 `login` requires a valid 6-digit code in addition to the password. The dashboard
 re-authenticates on a 401 so an expired session self-heals.
 
+Phase 14 (MFA recovery codes) implemented: users may generate a set of
+single-use backup codes (`POST /api/v1/auth/mfa/backup-codes`) for logging in
+when their authenticator is unavailable. Raw codes are shown once; only their
+SHA-256 hashes are stored (`users.backup_codes text[]`), and `login` consumes a
+matching code atomically so reuse is impossible. This closes the lockout hole a
+lost device would otherwise create.
+
 ## Process model
 
 | Process | Role | Why a separate process |
@@ -229,3 +236,6 @@ Users are tenant-scoped and ADMIN-created (`POST/GET /api/v1/users`), and RLS
 enforces the `WITH CHECK` exactly like API keys. Multi-factor: an enrolled user
 (`totp_secret`, RFC 6238 via `internal/totp`) must supply a 6-digit code at
 login; enroll/confirm/disable endpoints are self-service behind a user session.
+Users may also generate single-use backup codes (`users.backup_codes text[]`,
+SHA-256-hashed) that `login` accepts in place of a TOTP code and consumes
+atomically — a code can never be replayed.

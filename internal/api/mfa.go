@@ -1,8 +1,13 @@
 package api
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"syncforge/internal/store"
@@ -11,6 +16,35 @@ import (
 
 // nowFunc returns the current time. Overridden in tests to pin the TOTP window.
 var nowFunc = func() time.Time { return time.Now().UTC() }
+
+// backupCodeCount is how many single-use recovery codes are generated per
+// request.
+const backupCodeCount = 10
+
+// backupCodeHash hashes a raw backup code for storage; the raw value is shown
+// only once at generation.
+func backupCodeHash(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+// newBackupCodes generates backupCodeCount random recovery codes of the form
+// XXXX-XXXX, returning both the raw codes (shown once) and their hashes.
+func newBackupCodes() ([]string, []string, error) {
+	raw := make([]string, backupCodeCount)
+	hashed := make([]string, backupCodeCount)
+	for i := range raw {
+		buf := make([]byte, 5)
+		if _, err := rand.Read(buf); err != nil {
+			return nil, nil, err
+		}
+		s := base32.StdEncoding.EncodeToString(buf)
+		s = strings.ReplaceAll(s, "=", "")
+		raw[i] = s[:4] + "-" + s[4:8]
+		hashed[i] = backupCodeHash(raw[i])
+	}
+	return raw, hashed, nil
+}
 
 // handleMFAEnroll generates a fresh TOTP secret for the calling user (self
 // service) and returns its provisioning URI. The secret is stored but not yet
@@ -129,4 +163,34 @@ func (s *Server) handleMFADisable(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "mfa.disable", "user", userID, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+}
+
+// handleMFABackupCodes generates a fresh set of single-use backup codes,
+// replacing any previous ones. Raw codes are returned exactly once; only their
+// hashes are stored. The user must be MFA-enabled (or enrolling).
+func (s *Server) handleMFABackupCodes(w http.ResponseWriter, r *http.Request) {
+	tenant := tenantIDFrom(r)
+	userID := userIDFrom(r)
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "user session required")
+		return
+	}
+	raw, hashed, err := newBackupCodes()
+	if err != nil {
+		s.log.Error("generate backup codes", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to generate backup codes")
+		return
+	}
+	if err := store.SetBackupCodes(r.Context(), s.db.App, tenant, userID, hashed); err != nil {
+		s.log.Error("store backup codes", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to generate backup codes")
+		return
+	}
+	s.audit(r, "mfa.backup_codes", "user", userID, map[string]any{"count": len(raw)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"codes":         raw,
+		"shown_once":    true,
+		"single_use":    true,
+		"expires_never": true,
+	})
 }

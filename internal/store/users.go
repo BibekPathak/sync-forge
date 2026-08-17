@@ -136,3 +136,60 @@ func SetTOTPEnabled(ctx context.Context, pool *pgxpool.Pool, tenantID, userID st
 		return nil
 	})
 }
+
+// SetBackupCodes replaces a user's stored backup-code hashes.
+func SetBackupCodes(ctx context.Context, pool *pgxpool.Pool, tenantID, userID string, hashes []string) error {
+	return db.WithTenantTx(ctx, pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE users SET backup_codes=$1 WHERE id=$2 AND tenant_id=$3`, hashes, userID, tenantID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// BackupCodeCount returns how many backup codes a user still has.
+func BackupCodeCount(ctx context.Context, pool *pgxpool.Pool, tenantID, userID string) (int, error) {
+	var n int
+	_, err := db.WithTenant[struct{}](ctx, pool, tenantID, func(tx pgx.Tx) (struct{}, error) {
+		err := tx.QueryRow(ctx,
+			`SELECT cardinality(backup_codes) FROM users WHERE id=$1 AND tenant_id=$2`, userID, tenantID,
+		).Scan(&n)
+		return struct{}{}, err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// ConsumeBackupCode atomically removes one matching backup-code hash and reports
+// whether it was found and consumed. The whole UPDATE runs in one statement so
+// concurrent logins cannot use the same code twice.
+func ConsumeBackupCode(ctx context.Context, pool *pgxpool.Pool, tenantID, userID, hash string) (bool, error) {
+	var matched int
+	_, err := db.WithTenant[struct{}](ctx, pool, tenantID, func(tx pgx.Tx) (struct{}, error) {
+		err := tx.QueryRow(ctx,
+			`UPDATE users
+			    SET backup_codes = COALESCE(
+			        (SELECT array_agg(c) FROM unnest(backup_codes) AS c WHERE c <> $1),
+			        '{}'
+			    )
+			  WHERE id=$2 AND tenant_id=$3 AND $1 = ANY(backup_codes)
+			  RETURNING 1`,
+			hash, userID, tenantID,
+		).Scan(&matched)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return struct{}{}, nil // no match: not consumed
+		}
+		return struct{}{}, err
+	})
+	if err != nil {
+		return false, err
+	}
+	return matched == 1, nil
+}

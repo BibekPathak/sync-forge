@@ -126,3 +126,66 @@ func loginAsWithCode(t *testing.T, ts *httptest.Server, email, password, code st
 	}
 	return out.Token, resp.StatusCode
 }
+
+// TestMFABackupCodes proves single-use recovery codes: after enrolling and
+// enabling MFA, a backup code logs the user in exactly once, the same code is
+// rejected on reuse, and the remaining codes still work.
+func TestMFABackupCodes(t *testing.T) {
+	ts, _ := newAPIServer(t)
+
+	// Login + enroll + confirm MFA (same steps as TestMFALifecycle).
+	token, status := loginAs(t, ts, "admin@acme.dev", "syncforge-demo")
+	if status != http.StatusOK {
+		t.Fatalf("initial login: expected 200, got %d", status)
+	}
+	resp := postJSONAuthenticated(t, ts, "/api/v1/auth/mfa/enroll", "Authorization", "Bearer "+token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enroll: expected 200, got %d", resp.StatusCode)
+	}
+	var enroll struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&enroll); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	code, err := totp.Code(enroll.Secret, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = postJSONAuthenticated(t, ts, "/api/v1/auth/mfa/confirm", "Authorization", "Bearer "+token, map[string]any{"code": code})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("confirm: expected 200, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Generate backup codes; the raw codes come back exactly once.
+	resp = postJSONAuthenticated(t, ts, "/api/v1/auth/mfa/backup-codes", "Authorization", "Bearer "+token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("backup-codes: expected 200, got %d", resp.StatusCode)
+	}
+	var codes struct {
+		Codes []string `json:"codes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&codes); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(codes.Codes) < 2 {
+		t.Fatalf("expected backup codes, got %d", len(codes.Codes))
+	}
+	first := codes.Codes[0]
+
+	// Login with the backup code works.
+	if _, status := loginAsWithCode(t, ts, "admin@acme.dev", "syncforge-demo", first); status != http.StatusOK {
+		t.Fatalf("login with backup code: expected 200, got %d", status)
+	}
+	// The same code is now spent: reuse must fail.
+	if _, status := loginAsWithCode(t, ts, "admin@acme.dev", "syncforge-demo", first); status != http.StatusUnauthorized {
+		t.Fatalf("backup code reuse: expected 401, got %d", status)
+	}
+	// A different backup code still works.
+	if _, status := loginAsWithCode(t, ts, "admin@acme.dev", "syncforge-demo", codes.Codes[1]); status != http.StatusOK {
+		t.Fatalf("login with second backup code: expected 200, got %d", status)
+	}
+}

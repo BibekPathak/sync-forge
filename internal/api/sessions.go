@@ -115,7 +115,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Multi-factor: when the user has TOTP enabled, a valid 6-digit code is
-	// required in addition to the password.
+	// required in addition to the password. Either the live TOTP code or a
+	// single-use backup code (consumed on success) is accepted.
 	if user.TOTPEnabled {
 		if req.Code == "" {
 			s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "mfa_code_required"})
@@ -123,7 +124,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ok, err := totp.Validate(user.TOTPSecret, req.Code, nowFunc())
-		if err != nil || !ok {
+		if err == nil && ok {
+			// Authenticator code: nothing further to consume.
+		} else if consumed, cerr := store.ConsumeBackupCode(r.Context(), s.db.Admin, user.TenantID, user.ID, backupCodeHash(req.Code)); cerr != nil || !consumed {
 			s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "bad_mfa_code"})
 			writeError(w, http.StatusUnauthorized, "invalid mfa code")
 			return

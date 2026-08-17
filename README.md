@@ -7,14 +7,14 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 13 (Multi-factor auth) — build in progress.**
+> **Status: Phase 14 (MFA recovery codes) — build in progress.**
 > Bidirectional synchronization, durable retries + dead-letter queue, conflict
 > detection and resolution, reconciliation (auto/manual repairs), role-based
-> API key access control, per-user login with revocable server-side sessions
-> and optional TOTP multi-factor auth, a full observability stack (Grafana
-> dashboard, Prometheus alerts, OTLP tracing), Go benchmarks, webhook load
-> generation, scripted chaos, production-scale benchmarking, and a durable
-> audit trail + applied-write ledger. See
+> API key access control, per-user login with revocable server-side sessions,
+> optional TOTP multi-factor auth with single-use backup codes, a full
+> observability stack (Grafana dashboard, Prometheus alerts, OTLP tracing), Go
+> benchmarks, webhook load generation, scripted chaos, production-scale
+> benchmarking, and a durable audit trail + applied-write ledger. See
 > [docs/architecture.md](docs/architecture.md) and
 > [docs/failure-recovery.md](docs/failure-recovery.md).
 
@@ -239,9 +239,9 @@ provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
 - Auth: API keys (hashed at rest) with role-ranked access control
   (VIEWER/DEVELOPER/OPERATOR/ADMIN), plus per-user login with bcrypt-hashed
   passwords, signed session tokens backed by revocable server-side sessions,
-  and optional TOTP multi-factor authentication
-  (`POST /api/v1/auth/login` / `logout` / `refresh`, `/auth/mfa/enroll` /
-  `confirm` / `disable`).
+  optional TOTP multi-factor authentication, and single-use recovery backup
+  codes (`POST /api/v1/auth/login` / `logout` / `refresh`,
+  `/auth/mfa/enroll` / `confirm` / `disable` / `backup-codes`).
 - Audit: `audit_log` records every operator/security action (conflict and
   finding decisions, DLQ retry/discard, key/user management, logins) and
   `sync_operations` is a per-write ledger of applied destination mutations,
@@ -325,7 +325,7 @@ Tests that currently exist:
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 13)
+## 9. Known limitations (Phase 14)
 
 - Identity resolution is email-only and single-match; ambiguous or missing
   emails fall back to a new canonical record.
@@ -333,8 +333,9 @@ Tests that currently exist:
   honoring provider hints is limited to `Retry-After` shrinking, not dynamic
   growth.
 - RBAC is role-ranked (VIEWER/DEVELOPER/OPERATOR/ADMIN) with API-key auth and
-  per-user login (bcrypt + revocable session tokens + optional TOTP MFA);
-  there is no SSO, WebAuthn/passkey, or backup-code flow yet.
+  per-user login (bcrypt + revocable session tokens + optional TOTP MFA with
+  single-use backup codes); there is no SSO, WebAuthn/passkey, or backup-code
+  rotation notification yet.
 - Tracing is optional (disabled without `OTEL_EXPORTER_OTLP_ENDPOINT`); the
   compose stack ships an OpenTelemetry collector + Jaeger for the demo.
 - Load tests run in-process (in-memory bus, embedded sims); `scripts/bench.sh`
