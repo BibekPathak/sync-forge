@@ -65,6 +65,52 @@ func GetUserByEmail(ctx context.Context, pool *pgxpool.Pool, tenantID, email str
 	return u, err
 }
 
+// GetUser looks up a tenant user by id.
+func GetUser(ctx context.Context, pool *pgxpool.Pool, tenantID, userID string) (User, error) {
+	var u User
+	_, err := db.WithTenant[struct{}](ctx, pool, tenantID, func(tx pgx.Tx) (struct{}, error) {
+		err := tx.QueryRow(ctx,
+			`SELECT id, tenant_id, email, password_hash, role, COALESCE(totp_secret,''), totp_enabled, created_at
+			 FROM users WHERE id=$1 AND tenant_id=$2`, userID, tenantID,
+		).Scan(&u.ID, &u.TenantID, &u.Email, &u.PasswordHash, &u.Role, &u.TOTPSecret, &u.TOTPEnabled, &u.CreatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return struct{}{}, ErrNotFound
+		}
+		return struct{}{}, err
+	})
+	return u, err
+}
+
+// SetUserPassword replaces a user's bcrypt password hash.
+func SetUserPassword(ctx context.Context, pool *pgxpool.Pool, tenantID, userID, passwordHash string) error {
+	return db.WithTenantTx(ctx, pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE users SET password_hash=$1 WHERE id=$2 AND tenant_id=$3`, passwordHash, userID, tenantID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// SetUserRole changes a user's role.
+func SetUserRole(ctx context.Context, pool *pgxpool.Pool, tenantID, userID, role string) error {
+	return db.WithTenantTx(ctx, pool, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE users SET role=$1 WHERE id=$2 AND tenant_id=$3`, role, userID, tenantID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 // ListUsers lists the tenant's users.
 func ListUsers(ctx context.Context, pool *pgxpool.Pool, tenantID string) ([]User, error) {
 	out, err := db.WithTenant[[]User](ctx, pool, tenantID, func(tx pgx.Tx) ([]User, error) {

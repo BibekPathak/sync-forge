@@ -43,6 +43,11 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	// users (ADMIN: create/list tenant login accounts)
 	mux.Handle("POST /api/v1/users", s.requireRole("ADMIN")(http.HandlerFunc(s.handleCreateUser)))
 	mux.Handle("GET /api/v1/users", s.requireRole("ADMIN")(http.HandlerFunc(s.handleListUsers)))
+	mux.Handle("POST /api/v1/users/{id}/reset-password", s.requireRole("ADMIN")(http.HandlerFunc(s.handleResetPassword)))
+	mux.Handle("POST /api/v1/users/{id}/role", s.requireRole("ADMIN")(http.HandlerFunc(s.handleChangeRole)))
+
+	// user account (self-service password change behind a user session)
+	mux.Handle("POST /api/v1/auth/change-password", s.requireUser(http.HandlerFunc(s.handleChangePassword)))
 
 	// audit trail + applied-write ledger (read-only, VIEWER+)
 	mux.Handle("GET /api/v1/audit", s.requireRole("VIEWER")(http.HandlerFunc(s.handleListAudit)))

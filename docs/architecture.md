@@ -70,6 +70,13 @@ SHA-256 hashes are stored (`users.backup_codes text[]`), and `login` consumes a
 matching code atomically so reuse is impossible. This closes the lockout hole a
 lost device would otherwise create.
 
+Phase 15 (Account management) implemented: users can change their own password
+(`POST /api/v1/auth/change-password`, current password verified) and ADMINs can
+reset a password or change a role (`POST /api/v1/users/{id}/reset-password`,
+`POST /api/v1/users/{id}/role`, subject to the caller's rank). Every password
+change/reset revokes all of that user's sessions, so a leaked token cannot
+outlive the change, and each action is audit-logged.
+
 ## Process model
 
 | Process | Role | Why a separate process |
@@ -238,4 +245,9 @@ enforces the `WITH CHECK` exactly like API keys. Multi-factor: an enrolled user
 login; enroll/confirm/disable endpoints are self-service behind a user session.
 Users may also generate single-use backup codes (`users.backup_codes text[]`,
 SHA-256-hashed) that `login` accepts in place of a TOTP code and consumes
-atomically — a code can never be replayed.
+atomically — a code can never be replayed. Account management: a user can change
+their own password (`POST /api/v1/auth/change-password`, current password
+verified); an ADMIN can reset a password or change a role
+(`POST /api/v1/users/{id}/reset-password`, `POST /api/v1/users/{id}/role`).
+Password changes and resets revoke all of the target user's sessions, so a
+compromised token cannot outlive a credential change.
