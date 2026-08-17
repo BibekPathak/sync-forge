@@ -57,6 +57,12 @@ in the HMAC token; verification checks signature, expiry, and that a live
 token and `POST /api/v1/auth/refresh` rotates it (old token dies immediately).
 Sessions are tenant-scoped via RLS, listable, and revocable per user.
 
+Phase 13 (Multi-factor auth) implemented: users can enroll a TOTP secret
+(RFC 6238, dependency-free `internal/totp`) via `POST /api/v1/auth/mfa/enroll`,
+confirm it with a code to enable it, and disable it with a code. When enabled,
+`login` requires a valid 6-digit code in addition to the password. The dashboard
+re-authenticates on a 401 so an expired session self-heals.
+
 ## Process model
 
 | Process | Role | Why a separate process |
@@ -176,6 +182,8 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   sessions, source events, processed events, canonical records, sync policies,
   outbound writes, conflicts, reconciliation runs and findings, audit log and
   sync operations ledger.
+- `internal/totp` — dependency-free RFC 6238 TOTP (HMAC-SHA1, 6 digits, 30s
+  window) used for multi-factor login; unit-tested against the RFC vectors.
 - `internal/api` — HTTP handlers, auth middleware (role-ranked API keys and
   per-user sessions), webhook gateway.
 - `internal/events` — immutable canonical event contract + partition key.
@@ -218,4 +226,6 @@ live, so logout (`POST /api/v1/auth/logout`) and rotation
 (`POST /api/v1/auth/refresh`) take effect immediately — a revoked or rotated
 token cannot authenticate even before its TTL elapses.
 Users are tenant-scoped and ADMIN-created (`POST/GET /api/v1/users`), and RLS
-enforces the `WITH CHECK` exactly like API keys.
+enforces the `WITH CHECK` exactly like API keys. Multi-factor: an enrolled user
+(`totp_secret`, RFC 6238 via `internal/totp`) must supply a 6-digit code at
+login; enroll/confirm/disable endpoints are self-service behind a user session.

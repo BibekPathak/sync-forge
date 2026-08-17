@@ -18,6 +18,7 @@ const (
 	ctxRole     ctxKey = "role"
 	ctxActor    ctxKey = "actor"
 	ctxKeyID    ctxKey = "key_id"
+	ctxUserID   ctxKey = "user_id"
 )
 
 // roleRank orders the tenant roles: a higher role implies every capability of
@@ -112,5 +113,11 @@ func roleFrom(r *http.Request) string {
 // actorKeyID returns the id of the API key authenticating the request.
 func actorKeyID(r *http.Request) string {
 	v, _ := r.Context().Value(ctxKeyID).(string)
+	return v
+}
+
+// userIDFrom returns the id of the user whose session authenticates the request.
+func userIDFrom(r *http.Request) string {
+	v, _ := r.Context().Value(ctxUserID).(string)
 	return v
 }

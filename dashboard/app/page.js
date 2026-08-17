@@ -25,7 +25,7 @@ async function login() {
 }
 
 let _tokenPromise = null;
-async function getJSON(path) {
+async function getJSON(path, retry = true) {
   if (!_tokenPromise) {
     _tokenPromise = login().catch((e) => {
       _tokenPromise = null;
@@ -37,6 +37,12 @@ async function getJSON(path) {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
+  // The session token expires after 12h; on a 401 re-login once and retry so
+  // the dashboard self-heals instead of erroring until a page reload.
+  if (res.status === 401 && retry) {
+    _tokenPromise = null;
+    return getJSON(path, false);
+  }
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();
 }

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"syncforge/internal/store"
+	"syncforge/internal/totp"
 )
 
 // sessionTTL bounds how long a user login token is valid.
@@ -83,6 +84,7 @@ type loginRequest struct {
 	TenantSlug string `json:"tenant_slug"`
 	Email      string `json:"email"`
 	Password   string `json:"password"`
+	Code       string `json:"code"`
 }
 
 // handleLogin authenticates a user by email + password and returns a signed
@@ -110,6 +112,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "bad_password"})
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
+	}
+
+	// Multi-factor: when the user has TOTP enabled, a valid 6-digit code is
+	// required in addition to the password.
+	if user.TOTPEnabled {
+		if req.Code == "" {
+			s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "mfa_code_required"})
+			writeError(w, http.StatusUnauthorized, "mfa code required")
+			return
+		}
+		ok, err := totp.Validate(user.TOTPSecret, req.Code, nowFunc())
+		if err != nil || !ok {
+			s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "bad_mfa_code"})
+			writeError(w, http.StatusUnauthorized, "invalid mfa code")
+			return
+		}
 	}
 
 	// Record the session server-side so it can be revoked (logout/rotation).
@@ -227,6 +245,7 @@ func (s *Server) requireUser(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), ctxTenantID, c.TenantID)
 		ctx = context.WithValue(ctx, ctxRole, c.Role)
 		ctx = context.WithValue(ctx, ctxActor, "user:"+c.UserID)
+		ctx = context.WithValue(ctx, ctxUserID, c.UserID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -25,6 +25,11 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	mux.HandleFunc("POST /api/v1/auth/refresh", s.handleRefresh)
 
+	// multi-factor auth (self-service; user session required)
+	mux.Handle("POST /api/v1/auth/mfa/enroll", s.requireUser(http.HandlerFunc(s.handleMFAEnroll)))
+	mux.Handle("POST /api/v1/auth/mfa/confirm", s.requireUser(http.HandlerFunc(s.handleMFAConfirm)))
+	mux.Handle("POST /api/v1/auth/mfa/disable", s.requireUser(http.HandlerFunc(s.handleMFADisable)))
+
 	// tenant management (platform provisioning: ADMIN role only)
 	mux.Handle("POST /api/v1/tenants", s.requireRole("ADMIN")(http.HandlerFunc(s.handleCreateTenant)))
 	mux.Handle("GET /api/v1/tenants", s.requireRole("ADMIN")(http.HandlerFunc(s.handleListTenants)))
