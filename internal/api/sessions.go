@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
 	"syncforge/internal/store"
@@ -19,16 +20,19 @@ import (
 // sessionTTL bounds how long a user login token is valid.
 const sessionTTL = 12 * time.Hour
 
-// sessionClaims is the signed payload of a user session token.
+// sessionClaims is the signed payload of a user session token. JTI links the
+// token to a live row in the sessions table so it can be revoked.
 type sessionClaims struct {
+	JTI      string `json:"jti"`
 	UserID   string `json:"uid"`
 	TenantID string `json:"tid"`
 	Role     string `json:"role"`
 	Exp      int64  `json:"exp"`
 }
 
-// mintSessionToken signs the user's identity so requireUser can authenticate
-// requests without a DB round-trip. Format: base64url(claims).base64url(hmac).
+// mintSessionToken persists a server-side session row and signs a token that
+// references it. The session must exist for the token to authenticate, so
+// logout and revocation take effect immediately.
 func (s *Server) mintSessionToken(u sessionClaims) (string, error) {
 	u.Exp = time.Now().Add(sessionTTL).Unix()
 	claims, err := json.Marshal(u)
@@ -41,8 +45,10 @@ func (s *Server) mintSessionToken(u sessionClaims) (string, error) {
 	return b64 + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 
-// verifySessionToken validates a session token's signature and expiry.
-func (s *Server) verifySessionToken(token string) (sessionClaims, error) {
+// verifySessionToken validates a session token's signature, expiry, and that a
+// live server-side session row exists (not revoked). Signature checks run first
+// so a forged token never touches the DB.
+func (s *Server) verifySessionToken(r *http.Request, token string) (sessionClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 2 {
 		return sessionClaims{}, errors.New("malformed token")
@@ -61,11 +67,14 @@ func (s *Server) verifySessionToken(token string) (sessionClaims, error) {
 	if err := json.Unmarshal(claimsRaw, &c); err != nil {
 		return sessionClaims{}, errors.New("invalid token claims")
 	}
-	if c.UserID == "" || c.TenantID == "" || c.Role == "" {
+	if c.JTI == "" || c.UserID == "" || c.TenantID == "" || c.Role == "" {
 		return sessionClaims{}, errors.New("incomplete token claims")
 	}
 	if c.Exp < time.Now().Unix() {
 		return sessionClaims{}, errors.New("token expired")
+	}
+	if _, err := store.GetLiveSession(r.Context(), s.db.App, c.TenantID, c.JTI); err != nil {
+		return sessionClaims{}, errors.New("session revoked or expired")
 	}
 	return c, nil
 }
@@ -102,7 +111,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	token, err := s.mintSessionToken(sessionClaims{UserID: user.ID, TenantID: user.TenantID, Role: user.Role})
+
+	// Record the session server-side so it can be revoked (logout/rotation).
+	sess, err := store.CreateSession(r.Context(), s.db.Admin, store.Session{
+		JTI:       uuid.NewString(),
+		UserID:    user.ID,
+		TenantID:  user.TenantID,
+		Role:      user.Role,
+		ExpiresAt: time.Now().Add(sessionTTL).UTC(),
+	})
+	if err != nil {
+		s.log.Error("create session", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to issue session")
+		return
+	}
+	token, err := s.mintSessionToken(sessionClaims{JTI: sess.JTI, UserID: user.ID, TenantID: user.TenantID, Role: user.Role})
 	if err != nil {
 		s.log.Error("mint session token", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to issue session")
@@ -116,6 +139,65 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"user": map[string]any{
 			"id": user.ID, "email": user.Email, "role": user.Role,
 		},
+	})
+}
+
+// handleLogout revokes the caller's current session so its token can no longer
+// authenticate.
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	token := bearerTokenFrom(r)
+	c, err := s.verifySessionToken(r, token)
+	if err != nil {
+		// Already invalid: treat as a successful logout.
+		writeJSON(w, http.StatusOK, map[string]any{"status": "logged_out"})
+		return
+	}
+	if err := store.RevokeSession(r.Context(), s.db.App, c.TenantID, c.JTI); err != nil {
+		s.log.Error("revoke session on logout", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to log out")
+		return
+	}
+	s.auditLogin(r, c.TenantID, "auth.logout", "user:"+c.UserID, nil)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "logged_out"})
+}
+
+// handleRefresh rotates the caller's session: the current one is revoked and a
+// fresh token is issued, so a leaked token cannot be replayed forever.
+func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	token := bearerTokenFrom(r)
+	c, err := s.verifySessionToken(r, token)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid or expired session token")
+		return
+	}
+	if err := store.RevokeSession(r.Context(), s.db.App, c.TenantID, c.JTI); err != nil {
+		s.log.Error("revoke session on refresh", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to refresh session")
+		return
+	}
+	sess, err := store.CreateSession(r.Context(), s.db.Admin, store.Session{
+		JTI:       uuid.NewString(),
+		UserID:    c.UserID,
+		TenantID:  c.TenantID,
+		Role:      c.Role,
+		ExpiresAt: time.Now().Add(sessionTTL).UTC(),
+	})
+	if err != nil {
+		s.log.Error("create session on refresh", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to refresh session")
+		return
+	}
+	newToken, err := s.mintSessionToken(sessionClaims{JTI: sess.JTI, UserID: c.UserID, TenantID: c.TenantID, Role: c.Role})
+	if err != nil {
+		s.log.Error("mint refresh token", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to refresh session")
+		return
+	}
+	s.auditLogin(r, c.TenantID, "auth.refresh", "user:"+c.UserID, nil)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":      newToken,
+		"token_type": "Bearer",
+		"expires_in": int(sessionTTL.Seconds()),
 	})
 }
 
@@ -137,7 +219,7 @@ func (s *Server) requireUser(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		c, err := s.verifySessionToken(token)
+		c, err := s.verifySessionToken(r, token)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid or expired session token")
 			return

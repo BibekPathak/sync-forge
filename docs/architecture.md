@@ -50,6 +50,13 @@ and user management, login success and failure) with the acting identity, and
 engine applies, backing loop-prevention forensics and the "every write is
 auditable" guarantee. Both are tenant-scoped (RLS) and read via the API.
 
+Phase 12 (Session lifecycle) implemented: user sessions are now server-side
+and revocable. Every login records a `sessions` row keyed by a `jti` embedded
+in the HMAC token; verification checks signature, expiry, and that a live
+(unrevoked) session row exists, so `POST /api/v1/auth/logout` revokes the
+token and `POST /api/v1/auth/refresh` rotates it (old token dies immediately).
+Sessions are tenant-scoped via RLS, listable, and revocable per user.
+
 ## Process model
 
 | Process | Role | Why a separate process |
@@ -166,7 +173,7 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   `WithTenant` helper that scopes every query to a tenant via
   `SET LOCAL app.tenant_id`.
 - `internal/store` — data-access layer: tenants, connections, api keys, users,
-  source events, processed events, canonical records, sync policies,
+  sessions, source events, processed events, canonical records, sync policies,
   outbound writes, conflicts, reconciliation runs and findings, audit log and
   sync operations ledger.
 - `internal/api` — HTTP handlers, auth middleware (role-ranked API keys and
@@ -203,8 +210,12 @@ A key cannot revoke itself, and no key can mint another above its own rank.
 Raw keys are shown exactly once at creation; only the hash is stored.
 
 Users log in via `POST /api/v1/auth/login` (tenant slug + email + password).
-Passwords are bcrypt-hashed (`users.password_hash`); login returns a signed
-HMAC session token (12h TTL, `SYNCFORGE_AUTH_SECRET`) carrying `tenant_id` +
-`role`, so `requireRole` authorizes them with no per-request DB round-trip.
+Passwords are bcrypt-hashed (`users.password_hash`); login records a
+server-side `sessions` row (RLS-scoped, keyed by a `jti`) and returns a signed
+HMAC token (12h TTL, `SYNCFORGE_AUTH_SECRET`) carrying `tenant_id`, `role`, and
+`jti`. `requireRole` verifies the signature and then checks the session row is
+live, so logout (`POST /api/v1/auth/logout`) and rotation
+(`POST /api/v1/auth/refresh`) take effect immediately — a revoked or rotated
+token cannot authenticate even before its TTL elapses.
 Users are tenant-scoped and ADMIN-created (`POST/GET /api/v1/users`), and RLS
 enforces the `WITH CHECK` exactly like API keys.

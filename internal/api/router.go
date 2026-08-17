@@ -22,6 +22,8 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 
 	// user authentication (login issues a signed session token)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /api/v1/auth/refresh", s.handleRefresh)
 
 	// tenant management (platform provisioning: ADMIN role only)
 	mux.Handle("POST /api/v1/tenants", s.requireRole("ADMIN")(http.HandlerFunc(s.handleCreateTenant)))

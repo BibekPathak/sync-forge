@@ -169,3 +169,110 @@ func TestUserSessionTokenForbidsHigherRole(t *testing.T) {
 		t.Fatalf("viewer create user: expected 403, got %d", resp.StatusCode)
 	}
 }
+
+// TestUserLogoutRevokesToken proves logout invalidates the session server-side,
+// so the same token is rejected afterward.
+func TestUserLogoutRevokesToken(t *testing.T) {
+	ts, _ := newAPIServer(t)
+	token, status := loginAs(t, ts, "admin@acme.dev", "syncforge-demo")
+	if status != http.StatusOK {
+		t.Fatalf("login: expected 200, got %d", status)
+	}
+
+	// Token works before logout.
+	req := bearerReq(t, ts.URL+"/api/v1/connections", token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pre-logout read: expected 200, got %d", resp.StatusCode)
+	}
+
+	// Logout revokes it.
+	req = bearerReq(t, ts.URL+"/api/v1/auth/logout", token)
+	req.Method = http.MethodPost
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("logout: expected 200, got %d", resp.StatusCode)
+	}
+
+	// The same token no longer authenticates.
+	req = bearerReq(t, ts.URL+"/api/v1/connections", token)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("post-logout read: expected 401, got %d", resp.StatusCode)
+	}
+}
+
+// TestUserRefreshRotatesToken proves refresh revokes the old token and issues a
+// fresh one that continues to authenticate.
+func TestUserRefreshRotatesToken(t *testing.T) {
+	ts, _ := newAPIServer(t)
+	token, status := loginAs(t, ts, "admin@acme.dev", "syncforge-demo")
+	if status != http.StatusOK {
+		t.Fatalf("login: expected 200, got %d", status)
+	}
+
+	req := bearerReq(t, ts.URL+"/api/v1/auth/refresh", token)
+	req.Method = http.MethodPost
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || out.Token == "" {
+		t.Fatalf("refresh: expected 200 + token, got %d", resp.StatusCode)
+	}
+	if out.Token == token {
+		t.Fatal("refresh must issue a new token")
+	}
+
+	// Old token is dead after rotation.
+	req = bearerReq(t, ts.URL+"/api/v1/connections", token)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old token after refresh: expected 401, got %d", resp.StatusCode)
+	}
+
+	// New token works.
+	req = bearerReq(t, ts.URL+"/api/v1/connections", out.Token)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("new token after refresh: expected 200, got %d", resp.StatusCode)
+	}
+}
+
+// bearerReq builds a request authenticated with a Bearer session token.
+func bearerReq(t *testing.T, path, token string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
