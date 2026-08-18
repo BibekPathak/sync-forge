@@ -86,6 +86,12 @@ reset) clears the history. A per-IP Redis fixed-window throttle
 (`SYNCFORGE_LOGIN_THROTTLE_PER_MIN`, default 30/min) additionally slows
 distributed guessing; it is best-effort when Redis is unavailable.
 
+Phase 17 (Active sessions) implemented: the planned-but-unwired admin session
+surface is live. `GET /api/v1/sessions` (ADMIN) lists the tenant's live
+sessions (user, role, created/expiry), and
+`POST /api/v1/users/{id}/revoke-sessions` (ADMIN) signs a user out everywhere
+by revoking all of their sessions at once, audit-logged.
+
 ## Process model
 
 | Process | Role | Why a separate process |
@@ -263,4 +269,6 @@ compromised token cannot outlive a credential change. Login is further
 protected against brute force: failures are recorded in `login_attempts` and
 drive a per-account lockout (429 after N failures within a window, reset by a
 successful login), while a per-IP Redis throttle bounds the attempt rate. Both
-are configurable and best-effort where a backend is unavailable.
+are configurable and best-effort where a backend is unavailable. ADMINs can
+inspect live sessions (`GET /api/v1/sessions`) and sign a user out everywhere
+(`POST /api/v1/users/{id}/revoke-sessions`).

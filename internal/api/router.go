@@ -45,6 +45,10 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.Handle("GET /api/v1/users", s.requireRole("ADMIN")(http.HandlerFunc(s.handleListUsers)))
 	mux.Handle("POST /api/v1/users/{id}/reset-password", s.requireRole("ADMIN")(http.HandlerFunc(s.handleResetPassword)))
 	mux.Handle("POST /api/v1/users/{id}/role", s.requireRole("ADMIN")(http.HandlerFunc(s.handleChangeRole)))
+	mux.Handle("POST /api/v1/users/{id}/revoke-sessions", s.requireRole("ADMIN")(http.HandlerFunc(s.handleRevokeUserSessions)))
+
+	// sessions (ADMIN: view active logins)
+	mux.Handle("GET /api/v1/sessions", s.requireRole("ADMIN")(http.HandlerFunc(s.handleListSessions)))
 
 	// user account (self-service password change behind a user session)
 	mux.Handle("POST /api/v1/auth/change-password", s.requireUser(http.HandlerFunc(s.handleChangePassword)))

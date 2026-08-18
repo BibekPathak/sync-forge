@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -373,4 +374,41 @@ func (s *Server) loginFailure(r *http.Request, tenantID, tenantSlug, email, reas
 		}
 	}
 	s.auditLogin(r, tenantID, "auth.login_failed", email, map[string]any{"tenant_slug": tenantSlug, "reason": reason})
+}
+
+// handleListSessions returns the tenant's live sessions (ADMIN-only), so an
+// operator can see who is logged in, from when, and when each token expires.
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	sessions, err := store.ListSessions(r.Context(), s.db.App, tenantIDFrom(r), limit)
+	if err != nil {
+		s.log.Error("list sessions", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list sessions")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions, "count": len(sessions)})
+}
+
+// handleRevokeUserSessions signs a user out everywhere by revoking all of their
+// live sessions (ADMIN-only). Existing tokens stop authenticating immediately.
+func (s *Server) handleRevokeUserSessions(w http.ResponseWriter, r *http.Request) {
+	tenant := tenantIDFrom(r)
+	targetID := r.PathValue("id")
+
+	if _, err := store.GetUser(r.Context(), s.db.App, tenant, targetID); err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if err := store.RevokeUserSessions(r.Context(), s.db.App, tenant, targetID); err != nil {
+		s.log.Error("revoke user sessions", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to revoke sessions")
+		return
+	}
+	s.audit(r, "user.revoke_sessions", "user", targetID, nil)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "sessions_revoked", "id": targetID})
 }
