@@ -39,6 +39,11 @@ type Config struct {
 	RetryMaxAttempts int
 	SyncJobBatchSize int
 
+	// Login brute-force protection.
+	LoginMaxFailures    int
+	LoginLockoutMin     int
+	LoginThrottlePerMin int
+
 	ShutdownTimeout time.Duration
 }
 
@@ -66,6 +71,10 @@ func Load() Config {
 		RetryMaxDelayMs:  getInt("SYNCFORGE_RETRY_MAX_DELAY_MS", 60000),
 		RetryMaxAttempts: getInt("SYNCFORGE_RETRY_MAX_ATTEMPTS", 8),
 		SyncJobBatchSize: getInt("SYNCFORGE_SYNC_JOB_BATCH_SIZE", 1000),
+
+		LoginMaxFailures:    getInt("SYNCFORGE_LOGIN_MAX_FAILURES", 5),
+		LoginLockoutMin:     getInt("SYNCFORGE_LOGIN_LOCKOUT_MIN", 15),
+		LoginThrottlePerMin: getInt("SYNCFORGE_LOGIN_THROTTLE_PER_MIN", 30),
 
 		ShutdownTimeout: time.Duration(getInt("SYNCFORGE_SHUTDOWN_TIMEOUT_MS", 10000)) * time.Millisecond,
 	}

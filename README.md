@@ -7,16 +7,16 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 15 (Account management) — build in progress.**
+> **Status: Phase 16 (Login brute-force protection) — build in progress.**
 > Bidirectional synchronization, durable retries + dead-letter queue, conflict
 > detection and resolution, reconciliation (auto/manual repairs), role-based
 > API key access control, per-user login with revocable server-side sessions,
-> optional TOTP multi-factor auth with single-use backup codes, and full
-> account management (password change/reset and role change, session-revoking),
-> plus a full observability stack (Grafana dashboard, Prometheus alerts, OTLP
-> tracing), Go benchmarks, webhook load generation, scripted chaos,
-> production-scale benchmarking, and a durable audit trail + applied-write
-> ledger. See
+> optional TOTP multi-factor auth with single-use backup codes, account
+> management (password change/reset and role change, session-revoking), and
+> login brute-force protection (account lockout + per-IP throttle), plus a full
+> observability stack (Grafana dashboard, Prometheus alerts, OTLP tracing), Go
+> benchmarks, webhook load generation, scripted chaos, production-scale
+> benchmarking, and a durable audit trail + applied-write ledger. See
 > [docs/architecture.md](docs/architecture.md) and
 > [docs/failure-recovery.md](docs/failure-recovery.md).
 
@@ -242,9 +242,11 @@ provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
   (VIEWER/DEVELOPER/OPERATOR/ADMIN), plus per-user login with bcrypt-hashed
   passwords, signed session tokens backed by revocable server-side sessions,
   optional TOTP multi-factor authentication, single-use recovery backup codes,
-  and full account management (self-service change-password and ADMIN
-  reset-password / role change, both session-revoking) — endpoints under
-  `/api/v1/auth/*` and `/api/v1/users/{id}/*`.
+  full account management (self-service change-password and ADMIN
+  reset-password / role change, both session-revoking), and login
+  brute-force protection (per-account lockout after repeated failures plus a
+  per-IP Redis throttle) — endpoints under `/api/v1/auth/*` and
+  `/api/v1/users/{id}/*`.
 - Audit: `audit_log` records every operator/security action (conflict and
   finding decisions, DLQ retry/discard, key/user management, logins) and
   `sync_operations` is a per-write ledger of applied destination mutations,
@@ -328,7 +330,7 @@ Tests that currently exist:
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 15)
+## 9. Known limitations (Phase 16)
 
 - Identity resolution is email-only and single-match; ambiguous or missing
   emails fall back to a new canonical record.
@@ -337,8 +339,8 @@ Tests that currently exist:
   growth.
 - RBAC is role-ranked (VIEWER/DEVELOPER/OPERATOR/ADMIN) with API-key auth and
   per-user login (bcrypt + revocable session tokens + optional TOTP MFA with
-  single-use backup codes + ADMIN password reset/role change); there is no SSO,
-  WebAuthn/passkey, or account lockout/rate-limit on login attempts yet.
+  single-use backup codes + ADMIN password reset/role change + account lockout
+  and per-IP throttle); there is no SSO, WebAuthn/passkey, or CAPTCHA yet.
 - Tracing is optional (disabled without `OTEL_EXPORTER_OTLP_ENDPOINT`); the
   compose stack ships an OpenTelemetry collector + Jaeger for the demo.
 - Load tests run in-process (in-memory bus, embedded sims); `scripts/bench.sh`

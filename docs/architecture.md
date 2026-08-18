@@ -77,6 +77,15 @@ reset a password or change a role (`POST /api/v1/users/{id}/reset-password`,
 change/reset revokes all of that user's sessions, so a leaked token cannot
 outlive the change, and each action is audit-logged.
 
+Phase 16 (Login brute-force protection) implemented: every login failure is
+recorded durably in `login_attempts` (RLS-scoped, per tenant+email+ip), and
+login enforces an account lockout — after `SYNCFORGE_LOGIN_MAX_FAILURES`
+(default 5) failures within `SYNCFORGE_LOGIN_LOCKOUT_MIN` (default 15) minutes,
+further attempts are rejected with 429 until a successful login (or an ADMIN
+reset) clears the history. A per-IP Redis fixed-window throttle
+(`SYNCFORGE_LOGIN_THROTTLE_PER_MIN`, default 30/min) additionally slows
+distributed guessing; it is best-effort when Redis is unavailable.
+
 ## Process model
 
 | Process | Role | Why a separate process |
@@ -193,9 +202,9 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   `WithTenant` helper that scopes every query to a tenant via
   `SET LOCAL app.tenant_id`.
 - `internal/store` — data-access layer: tenants, connections, api keys, users,
-  sessions, source events, processed events, canonical records, sync policies,
-  outbound writes, conflicts, reconciliation runs and findings, audit log and
-  sync operations ledger.
+  sessions, login attempts, source events, processed events, canonical records,
+  sync policies, outbound writes, conflicts, reconciliation runs and findings,
+  audit log and sync operations ledger.
 - `internal/totp` — dependency-free RFC 6238 TOTP (HMAC-SHA1, 6 digits, 30s
   window) used for multi-factor login; unit-tested against the RFC vectors.
 - `internal/api` — HTTP handlers, auth middleware (role-ranked API keys and
@@ -250,4 +259,8 @@ their own password (`POST /api/v1/auth/change-password`, current password
 verified); an ADMIN can reset a password or change a role
 (`POST /api/v1/users/{id}/reset-password`, `POST /api/v1/users/{id}/role`).
 Password changes and resets revoke all of the target user's sessions, so a
-compromised token cannot outlive a credential change.
+compromised token cannot outlive a credential change. Login is further
+protected against brute force: failures are recorded in `login_attempts` and
+drive a per-account lockout (429 after N failures within a window, reset by a
+successful login), while a per-IP Redis throttle bounds the attempt rate. Both
+are configurable and best-effort where a backend is unavailable.

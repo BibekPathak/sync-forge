@@ -89,27 +89,47 @@ type loginRequest struct {
 
 // handleLogin authenticates a user by email + password and returns a signed
 // session token. The tenant is resolved by slug (users are tenant-scoped) via
-// the BYPASSRLS admin pool, mirroring API-key verification.
+// the BYPASSRLS admin pool, mirroring API-key verification. It enforces a
+// per-IP throttle (Redis, best-effort) and an account lockout after repeated
+// failures.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TenantSlug == "" || req.Email == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "tenant_slug, email and password are required")
 		return
 	}
+
+	// Per-IP throttle: too many login attempts from one address, fast.
+	if s.loginThrottled(r) {
+		writeError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
+		return
+	}
+
 	tenant, err := store.GetTenantBySlug(r.Context(), s.db.Admin, req.TenantSlug)
 	if err != nil {
-		s.auditLogin(r, "", "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "unknown_tenant"})
+		s.loginFailure(r, "", req.TenantSlug, req.Email, "unknown_tenant")
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+
+	// Account lockout: repeated failures within the window block further
+	// attempts until the window passes, regardless of the supplied password.
+	window := time.Duration(s.cfg.LoginLockoutMin) * time.Minute
+	failures, cerr := store.CountRecentFailures(r.Context(), s.db.Admin, tenant.ID, req.Email, window)
+	if cerr == nil && failures >= s.cfg.LoginMaxFailures {
+		s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "account_locked"})
+		writeError(w, http.StatusTooManyRequests, "account temporarily locked after too many failed attempts")
+		return
+	}
+
 	user, err := store.GetUserByEmail(r.Context(), s.db.Admin, tenant.ID, req.Email)
 	if err != nil {
-		s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "unknown_user"})
+		s.loginFailure(r, tenant.ID, req.TenantSlug, req.Email, "unknown_user")
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "bad_password"})
+		s.loginFailure(r, tenant.ID, req.TenantSlug, req.Email, "bad_password")
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -119,7 +139,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// single-use backup code (consumed on success) is accepted.
 	if user.TOTPEnabled {
 		if req.Code == "" {
-			s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "mfa_code_required"})
+			s.loginFailure(r, tenant.ID, req.TenantSlug, req.Email, "mfa_code_required")
 			writeError(w, http.StatusUnauthorized, "mfa code required")
 			return
 		}
@@ -127,13 +147,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if err == nil && ok {
 			// Authenticator code: nothing further to consume.
 		} else if consumed, cerr := store.ConsumeBackupCode(r.Context(), s.db.Admin, user.TenantID, user.ID, backupCodeHash(req.Code)); cerr != nil || !consumed {
-			s.auditLogin(r, tenant.ID, "auth.login_failed", req.Email, map[string]any{"tenant_slug": req.TenantSlug, "reason": "bad_mfa_code"})
+			s.loginFailure(r, tenant.ID, req.TenantSlug, req.Email, "bad_mfa_code")
 			writeError(w, http.StatusUnauthorized, "invalid mfa code")
 			return
 		}
 	}
 
-	// Record the session server-side so it can be revoked (logout/rotation).
+	// Successful login: clear the failure history so the lockout counter starts
+	// fresh, then record the session server-side.
+	_ = store.ClearLoginFailures(r.Context(), s.db.Admin, user.TenantID, req.Email)
 	sess, err := store.CreateSession(r.Context(), s.db.Admin, store.Session{
 		JTI:       uuid.NewString(),
 		UserID:    user.ID,
@@ -309,4 +331,46 @@ func (s *Server) auditLogin(r *http.Request, tenantID, action, email string, met
 	if err != nil {
 		s.log.Warn("audit log write failed", "action", action, "error", err)
 	}
+}
+
+// clientIP returns the remote address (used for the per-IP throttle).
+func clientIP(r *http.Request) string {
+	return r.RemoteAddr
+}
+
+// loginThrottled applies a per-IP fixed-window limit on login attempts using
+// Redis. Best-effort: if Redis is unavailable the request is allowed through
+// rather than locking everyone out.
+func (s *Server) loginThrottled(r *http.Request) bool {
+	if s.cfg.LoginThrottlePerMin <= 0 || s.cache == nil {
+		return false
+	}
+	key := "login:throttle:" + clientIP(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	n, err := s.cache.Client.Incr(ctx, key).Result()
+	if err != nil {
+		s.log.Warn("login throttle backend unavailable, allowing", "error", err)
+		return false
+	}
+	if n == 1 {
+		_ = s.cache.Client.Expire(ctx, key, time.Minute).Err()
+	}
+	return n > int64(s.cfg.LoginThrottlePerMin)
+}
+
+// loginFailure records a failed attempt (drives lockout) and audits it.
+func (s *Server) loginFailure(r *http.Request, tenantID, tenantSlug, email, reason string) {
+	pool := s.db.Admin
+	if tenantID != "" {
+		if err := store.RecordLoginAttempt(r.Context(), pool, store.LoginAttempt{
+			TenantID: tenantID,
+			Email:    email,
+			IP:       clientIP(r),
+			Success:  false,
+		}); err != nil {
+			s.log.Warn("record login failure", "email", email, "error", err)
+		}
+	}
+	s.auditLogin(r, tenantID, "auth.login_failed", email, map[string]any{"tenant_slug": tenantSlug, "reason": reason})
 }
