@@ -24,6 +24,7 @@ func (s *Server) Router(metricsHandler http.Handler) http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	mux.HandleFunc("POST /api/v1/auth/refresh", s.handleRefresh)
+	mux.HandleFunc("POST /api/v1/auth/oidc/login", s.handleOIDCLogin)
 
 	// multi-factor auth (self-service; user session required)
 	mux.Handle("POST /api/v1/auth/mfa/enroll", s.requireUser(http.HandlerFunc(s.handleMFAEnroll)))

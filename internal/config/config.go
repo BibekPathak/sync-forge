@@ -44,6 +44,14 @@ type Config struct {
 	LoginLockoutMin     int
 	LoginThrottlePerMin int
 
+	// OIDC SSO. When OIDCIssuer is set, users can log in with an ID token from
+	// that provider (verified against its JWKS) and are mapped to a tenant
+	// user by email.
+	OIDCIssuer   string
+	OIDCClientID string
+	// OIDCAutoProvision creates a VIEWER user on first SSO login when true.
+	OIDCAutoProvision bool
+
 	ShutdownTimeout time.Duration
 }
 
@@ -75,6 +83,10 @@ func Load() Config {
 		LoginMaxFailures:    getInt("SYNCFORGE_LOGIN_MAX_FAILURES", 5),
 		LoginLockoutMin:     getInt("SYNCFORGE_LOGIN_LOCKOUT_MIN", 15),
 		LoginThrottlePerMin: getInt("SYNCFORGE_LOGIN_THROTTLE_PER_MIN", 30),
+
+		OIDCIssuer:        get("SYNCFORGE_OIDC_ISSUER", ""),
+		OIDCClientID:      get("SYNCFORGE_OIDC_CLIENT_ID", ""),
+		OIDCAutoProvision: getBool("SYNCFORGE_OIDC_AUTO_PROVISION", false),
 
 		ShutdownTimeout: time.Duration(getInt("SYNCFORGE_SHUTDOWN_TIMEOUT_MS", 10000)) * time.Millisecond,
 	}

@@ -92,13 +92,22 @@ sessions (user, role, created/expiry), and
 `POST /api/v1/users/{id}/revoke-sessions` (ADMIN) signs a user out everywhere
 by revoking all of their sessions at once, audit-logged.
 
+Phase 18 (OIDC SSO) implemented: `POST /api/v1/auth/oidc/login` accepts an ID
+token from a configured issuer and verifies it against the issuer's JWKS
+(signature, issuer, audience, expiry) via the dependency-free `internal/oidc`
+client. The user is resolved by email in the tenant or auto-provisioned as
+VIEWER (`SYNCFORGE_OIDC_AUTO_PROVISION`), and a normal SyncForge session is
+issued so SSO logins use the same RBAC/session surface. The compose stack ships
+a mock IdP (`cmd/sim-oidc`, `internal/simulator.OIDCProvider`) serving
+discovery, JWKS, and token endpoints.
+
 ## Process model
 
 | Process | Role | Why a separate process |
 |---|---|---|
 | `cmd/api` | REST API + webhook gateway | Webhook ingestion must stay up while workers are backlogged; API is latency-sensitive |
 | `cmd/engine` | Ingestion processor + sync worker (retry/reconciliation in Phases 4–6) | Scales independently of the API |
-| `cmd/sim-salesforce`, `cmd/sim-hubspot` | Simulated external systems | They represent third-party systems, not SyncForge |
+| `cmd/sim-salesforce`, `cmd/sim-hubspot`, `cmd/sim-oidc` | Simulated external systems | They represent third-party systems (incl. the SSO IdP), not SyncForge |
 
 Infrastructure: PostgreSQL 17 (durable state + RLS), Redis 7 (rate limiting,
 cache), Redpanda (durable event bus), Prometheus + Grafana (metrics), Next.js
@@ -213,6 +222,9 @@ provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
   audit log and sync operations ledger.
 - `internal/totp` — dependency-free RFC 6238 TOTP (HMAC-SHA1, 6 digits, 30s
   window) used for multi-factor login; unit-tested against the RFC vectors.
+- `internal/oidc` — dependency-free OIDC client: discovery, JWKS-based RS256
+  ID-token verification (signature, issuer, audience, expiry), and claim
+  extraction; paired with `internal/simulator.OIDCProvider` (mock IdP).
 - `internal/api` — HTTP handlers, auth middleware (role-ranked API keys and
   per-user sessions), webhook gateway.
 - `internal/events` — immutable canonical event contract + partition key.
@@ -271,4 +283,7 @@ drive a per-account lockout (429 after N failures within a window, reset by a
 successful login), while a per-IP Redis throttle bounds the attempt rate. Both
 are configurable and best-effort where a backend is unavailable. ADMINs can
 inspect live sessions (`GET /api/v1/sessions`) and sign a user out everywhere
-(`POST /api/v1/users/{id}/revoke-sessions`).
+(`POST /api/v1/users/{id}/revoke-sessions`). OIDC SSO (`POST
+/api/v1/auth/oidc/login`) verifies an external ID token against the issuer's
+JWKS (RS256) before resolving or auto-provisioning the tenant user, so an SSO
+login issues the same session surface as password login.

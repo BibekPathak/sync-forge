@@ -18,12 +18,14 @@ x-go-service: &go-service
     ADMIN_DATABASE_URL: postgres://syncforge_engine:syncforge_engine@postgres:5432/syncforge?sslmode=disable
     REDIS_ADDR: redis:6379
     SYNCFORGE_ENV: development
-    SYNCFORGE_BOOTSTRAP_KEY: syncforge-admin-dev
     SYNCFORGE_SEED_ACME: "true"
     SYNCFORGE_SEED_SALESFORCE_URL: http://sim-salesforce:9081
     SYNCFORGE_SEED_HUBSPOT_URL: http://sim-hubspot:9082
     SYNCFORGE_SEED_SALESFORCE_WEBHOOK_SECRET: sfs-dev-secret
     SYNCFORGE_SEED_HUBSPOT_WEBHOOK_SECRET: sfh-dev-secret
+    SYNCFORGE_OIDC_ISSUER: http://sim-oidc:9083
+    SYNCFORGE_OIDC_CLIENT_ID: syncforge-cli
+    SYNCFORGE_OIDC_AUTO_PROVISION: "true"
     OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
 
 services:
@@ -120,6 +122,16 @@ services:
       SIM_WEBHOOK_SECRET: sfh-dev-secret
     ports:
       - "9082:9082"
+
+  sim-oidc:
+    <<: *go-service
+    command: ["sim-oidc"]
+    environment:
+      HTTP_ADDR: ":9083"
+      OIDC_CLIENT_ID: syncforge-cli
+      OIDC_USER_EMAIL: sso@acme.dev
+    ports:
+      - "9083:9083"
 
   prometheus:
     image: prom/prometheus:latest

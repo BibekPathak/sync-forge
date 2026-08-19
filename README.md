@@ -7,17 +7,18 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
-> **Status: Phase 17 (Active sessions) — build in progress.**
+> **Status: Phase 18 (OIDC SSO) — build in progress.**
 > Bidirectional synchronization, durable retries + dead-letter queue, conflict
 > detection and resolution, reconciliation (auto/manual repairs), role-based
 > API key access control, per-user login with revocable server-side sessions
 > (active-logins surface + sign-out-everywhere), optional TOTP multi-factor
 > auth with single-use backup codes, account management (password change/reset
 > and role change, session-revoking), login brute-force protection (account
-> lockout + per-IP throttle), plus a full observability stack (Grafana
-> dashboard, Prometheus alerts, OTLP tracing), Go benchmarks, webhook load
-> generation, scripted chaos, production-scale benchmarking, and a durable
-> audit trail + applied-write ledger. See
+> lockout + per-IP throttle), OIDC SSO login against a JWKS-verified issuer
+> (with a bundled mock IdP and optional auto-provisioning), plus a full
+> observability stack (Grafana dashboard, Prometheus alerts, OTLP tracing), Go
+> benchmarks, webhook load generation, scripted chaos, production-scale
+> benchmarking, and a durable audit trail + applied-write ledger. See
 > [docs/architecture.md](docs/architecture.md) and
 > [docs/failure-recovery.md](docs/failure-recovery.md).
 
@@ -245,9 +246,11 @@ provider mutation ─▶ signed webhook ─▶ webhook gateway (HMAC verify)
   optional TOTP multi-factor authentication, single-use recovery backup codes,
   full account management (self-service change-password and ADMIN
   reset-password / role change / revoke-sessions, all session-revoking), an
-  active-logins surface (`GET /api/v1/sessions`), and login
+  active-logins surface (`GET /api/v1/sessions`), login
   brute-force protection (per-account lockout after repeated failures plus a
-  per-IP Redis throttle) — endpoints under `/api/v1/auth/*`, `/api/v1/users/{id}/*`,
+  per-IP Redis throttle), and OIDC SSO login
+  (`POST /api/v1/auth/oidc/login`, JWKS-verified ID tokens with optional
+  auto-provisioning) — endpoints under `/api/v1/auth/*`, `/api/v1/users/{id}/*`,
   and `/api/v1/sessions`.
 - Audit: `audit_log` records every operator/security action (conflict and
   finding decisions, DLQ retry/discard, key/user management, logins) and
@@ -332,7 +335,7 @@ Tests that currently exist:
 > Integration tests require `postgres` running (`make test-integration` starts
 > it) and connect with the two service roles.
 
-## 9. Known limitations (Phase 17)
+## 9. Known limitations (Phase 18)
 
 - Identity resolution is email-only and single-match; ambiguous or missing
   emails fall back to a new canonical record.
@@ -342,7 +345,8 @@ Tests that currently exist:
 - RBAC is role-ranked (VIEWER/DEVELOPER/OPERATOR/ADMIN) with API-key auth and
   per-user login (bcrypt + revocable session tokens + optional TOTP MFA with
   single-use backup codes + ADMIN password reset/role change + account lockout
-  and per-IP throttle); there is no SSO, WebAuthn/passkey, or CAPTCHA yet.
+  and per-IP throttle + OIDC SSO); there is no WebAuthn/passkey or CAPTCHA yet,
+  and OIDC auto-provisioning creates VIEWER accounts (role grants stay manual).
 - Tracing is optional (disabled without `OTEL_EXPORTER_OTLP_ENDPOINT`); the
   compose stack ships an OpenTelemetry collector + Jaeger for the demo.
 - Load tests run in-process (in-memory bus, embedded sims); `scripts/bench.sh`
