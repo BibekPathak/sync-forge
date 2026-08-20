@@ -128,6 +128,9 @@ dashboard.
 
 ## Event pipeline
 
+> See [diagrams.md](diagrams.md) for the high-level and event-lifecycle
+> diagrams; the ASCII pipeline below is the same flow in text.
+
 ```text
 provider mutation ─▶ signed webhook ─▶ gateway (HMAC verify)
    ─▶ source_events (durable; unique tenant_id+source+event_id)

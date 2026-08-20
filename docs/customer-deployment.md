@@ -104,3 +104,7 @@ This configuration demonstrates the actual value: a customer with a messy
 two-CRM problem gets a system that is **deployed and operated inside their
 environment** — field mapping, conflict rules, rate limits, reconciliation, and
 audit — rather than a generic "distributed system" demo.
+
+---
+
+See [diagrams.md](diagrams.md) for the Acme deployment diagram.

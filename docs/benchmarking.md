@@ -15,6 +15,26 @@ mid-apply. See [consistency-model.md](consistency-model.md).
 
 Every number in this document must be interpreted against that claim.
 
+## Measured results (local reference)
+
+| Test | Result |
+|---|---|
+| Ingestion throughput | ~3,700 events/sec @ concurrency 32 |
+| End-to-end throughput | ~47 events/sec |
+| End-to-end after targeted fix | ~50 events/sec |
+| E2E improvement | +6% |
+| Latency p50 / p95 / p99 | 7.9 ms / 12.7 ms / 15.9 ms (ingestion) |
+| Processing latency p50/p95/p99 | 25 ms / 50 ms / 50 ms (engine histogram) |
+| Data loss | 0 |
+| Destination writes | 15,000 / 15,000 |
+| Duplicates suppressed | 0 |
+| DLQ / retries / conflicts | 0 / 0 / 0 |
+
+Workload: 15,000 create events @ concurrency 32, 1 topic partition, on the
+12-core reference machine recorded below. These are **local reference** numbers,
+not universal system throughput; the harness reproduces the same workload on any
+hardware.
+
 ## Reference environment
 
 Results are labeled **local reference benchmark**: they describe *this*

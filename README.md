@@ -30,6 +30,23 @@ events, reconciliation and tenant isolation.
 
 ---
 
+## Quickstart — 4 demos, ~1 command each
+
+The fastest way to see SyncForge is to run the demo scripts. Each one proves a
+different part of the system.
+
+| Command | What it proves |
+|---|---|
+| `make up` | Full stack: API, engine, broker, Postgres, sims, Prometheus, Grafana, Jaeger, dashboard |
+| `./scripts/demo.sh` | Full-stack walkthrough: login (RBAC), webhook → pipeline → HubSpot, bidirectional sync, reconcile sweep, audit/ops/DLQ reads |
+| `./scripts/bench.sh 15000 32 1` | Benchmark: ingestion vs end-to-end throughput, latency percentiles, reliability. See [docs/benchmarking.md](docs/benchmarking.md) |
+| `./scripts/chaos-demo.sh 10000 42` | Failure demonstration: seeded probabilistic faults (failures, latency, duplicates, out-of-order, malformed, rate limits) + mid-run worker restart → **0 data loss** |
+| `./scripts/customer-demo.sh` | Acme Corp deployment: Salesforce ↔ HubSpot with field-merge policies, delete propagation, and a durable audit trail. See [docs/customer-deployment.md](docs/customer-deployment.md) |
+
+`make up` first, then run any of the scripts.
+
+---
+
 ## 1. Problem statement
 
 Enterprise integrations are usually hand-written point-to-point bridges. Every
@@ -371,6 +388,7 @@ multi-region scaling) rather than new pipeline features.
 | Doc | What it answers |
 |---|---|
 | [architecture.md](docs/architecture.md) | 10-minute system overview: processes, pipeline, packages |
+| [diagrams.md](docs/diagrams.md) | 5 architecture diagrams (Mermaid + ASCII): high-level, event lifecycle, conflicts, retry/DLQ, Acme deployment |
 | [consistency-model.md](docs/consistency-model.md) | Delivery/effect/ordering guarantees and the exactly-once question |
 | [conflict-resolution.md](docs/conflict-resolution.md) | How concurrent edits are detected and resolved |
 | [failure-recovery.md](docs/failure-recovery.md) | Retries, DLQ, fault injection, resumable sync |

@@ -137,3 +137,6 @@ duplicate destination records at every phase.
 - Loop prevention still applies on retried applies: an echo of our own write is
   recognized by its fingerprint and dropped even when it arrives through the
   retry path.
+---
+
+See [diagrams.md](diagrams.md) for the architecture diagrams.

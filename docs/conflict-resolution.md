@@ -58,3 +58,7 @@ loop-prevention, and the exactly-once destination write guarantee.
 
 - `sync_conflicts_detected_total`, `sync_conflicts_resolved_total`
 - Every resolve/dismiss is written to `audit_log` (actor, side, winner).
+
+---
+
+See [diagrams.md](diagrams.md) for the architecture diagrams.
