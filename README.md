@@ -7,6 +7,12 @@ delivery, out-of-order events, retries, partial failures, rate limits, schema
 evolution, synchronization loops, conflict detection/resolution, dead-letter
 events, reconciliation and tenant isolation.
 
+> **Consistency claim:** at-least-once event delivery with idempotent,
+> exactly-once-effect destination writes under the engine's supported failure
+> model. SyncForge does not claim exactly-once delivery; it guarantees that
+> every logical event produces exactly one destination mutation even when
+> redelivered. See [docs/consistency-model.md](docs/consistency-model.md).
+
 > **Status: Phase 18 (OIDC SSO) — build in progress.**
 > Bidirectional synchronization, durable retries + dead-letter queue, conflict
 > detection and resolution, reconciliation (auto/manual repairs), role-based
@@ -359,3 +365,16 @@ Tests that currently exist:
 
 Remaining work is hardening (real-provider adapters, multi-factor / SSO,
 multi-region scaling) rather than new pipeline features.
+
+## 11. Documentation
+
+| Doc | What it answers |
+|---|---|
+| [architecture.md](docs/architecture.md) | 10-minute system overview: processes, pipeline, packages |
+| [consistency-model.md](docs/consistency-model.md) | Delivery/effect/ordering guarantees and the exactly-once question |
+| [conflict-resolution.md](docs/conflict-resolution.md) | How concurrent edits are detected and resolved |
+| [failure-recovery.md](docs/failure-recovery.md) | Retries, DLQ, fault injection, resumable sync |
+| [security-model.md](docs/security-model.md) | Tenant isolation, auth, RBAC, MFA, brute-force protection |
+| [benchmarking.md](docs/benchmarking.md) | Local-reference benchmark results + reproducible methodology |
+| [customer-deployment.md](docs/customer-deployment.md) | Acme Corp deployment story (field mapping, policies, audit) |
+| [operations-runbook.md](docs/operations-runbook.md) | Day-2 procedures: health, DLQ replay, conflicts, reconcile |

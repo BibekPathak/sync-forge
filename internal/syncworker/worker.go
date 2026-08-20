@@ -424,6 +424,8 @@ func (w *Worker) applyUpsert(ctx context.Context, ev *events.Event, entityType s
 	canonical.FieldProvenance = mergedFP.ToMap()
 
 	// 5. Propagate to every destination.
+	var outboundWrites []store.OutboundWrite
+	var syncOps []store.SyncOperation
 	for _, policy := range policies {
 		dstConn, err := store.GetConnectionByProvider(ctx, w.db.App, tenant, policy.Destination)
 		if err != nil {
@@ -453,27 +455,35 @@ func (w *Worker) applyUpsert(ctx context.Context, ev *events.Event, entityType s
 		w.metrics.DestinationWrites.Add(ctx, 1, metric.WithAttributes(observability.SrcAttr(policy.Destination)))
 
 		// Record what we wrote so its echo is recognized and dropped later.
-		if err := store.UpsertOutboundWrite(ctx, w.db.App, store.OutboundWrite{
-			TenantID:     tenant,
-			EntityType:   entityType,
-			EntityID:     canonical.EntityID,
-			TargetSource: policy.Destination,
-			Fingerprint:  cust.Fingerprint(),
-		}); err != nil {
-			return err
-		}
-		w.recordSyncOperation(ctx, tenant, entityType, canonical.EntityID, ev.Source,
-			policy.Destination, ev.SourceVersion, ev.EventID, cust.Fingerprint())
+		outboundWrites = append(outboundWrites, store.OutboundWrite{
+			TenantID:       tenant,
+			EntityType:     entityType,
+			EntityID:       canonical.EntityID,
+			TargetSource:   policy.Destination,
+			Fingerprint:    cust.Fingerprint(),
+			AppliedVersion: ev.SourceVersion,
+		})
+		syncOps = append(syncOps, store.SyncOperation{
+			TenantID:       tenant,
+			EntityType:     entityType,
+			EntityID:       canonical.EntityID,
+			Source:         ev.Source,
+			TargetSource:   policy.Destination,
+			EventID:        ev.EventID,
+			AppliedVersion: ev.SourceVersion,
+			Fingerprint:    cust.Fingerprint(),
+		})
 	}
 
-	// 6. Persist canonical state.
+	// 6. Persist canonical state + outbound fingerprints + ledger in one
+	// transaction (single round trip; PostgreSQL is the apply-path bottleneck).
 	canonical.Fields = cust.Fields()
 	canonical.SourceVersions[ev.Source] = ev.SourceVersion
 	canonical.Version++
 	canonical.OriginSource = ev.Source
 	canonical.OriginEventID = ev.EventID
 	canonical.Tombstone = false
-	_, err = store.UpsertCanonical(ctx, w.db.App, canonical)
+	_, err = store.PersistApplyState(ctx, w.db.App, canonical, outboundWrites, syncOps)
 	return err
 }
 

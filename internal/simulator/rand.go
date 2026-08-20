@@ -32,3 +32,10 @@ func (s *safeRand) Intn(n int) int {
 	defer s.mu.Unlock()
 	return s.r.Intn(n)
 }
+
+// Seed reseeds the underlying RNG so a scenario is reproducible.
+func (s *safeRand) Seed(seed int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.r.Seed(seed)
+}

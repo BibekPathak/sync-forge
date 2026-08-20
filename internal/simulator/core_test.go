@@ -368,6 +368,83 @@ func TestFaultCorruptFieldType(t *testing.T) {
 	}
 }
 
+// TestProbabilisticFaultsAreDeterministic proves a seeded fault config yields
+// the same injected-fault sequence every time, so chaos scenarios are
+// reproducible.
+func TestProbabilisticFaultsAreDeterministic(t *testing.T) {
+	// Exercise a sequence of probabilistic decisions with a fixed seed twice
+	// and assert the outcomes match exactly.
+	run := func() []bool {
+		fm := NewFaultManager()
+		fm.Set(FaultConfig{Seed: 99, FailureRate: 0.5, AuthFailureRate: 0.2, MalformedRate: 0.1})
+		var out []bool
+		for i := 0; i < 50; i++ {
+			out = append(out, fm.ShouldFail(), fm.AuthFailure(), fm.Malformed())
+		}
+		return out
+	}
+	a, b := run(), run()
+	if len(a) != len(b) {
+		t.Fatal("different lengths")
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("nondeterministic at %d: %v vs %v", i, a[i], b[i])
+		}
+	}
+}
+
+// TestProbabilisticFailureRateRespectsBound proves a 0.5 failure rate fires
+// roughly half the time over a large sample.
+func TestProbabilisticFailureRateRespectsBound(t *testing.T) {
+	fm := NewFaultManager()
+	fm.Set(FaultConfig{FailureRate: 0.5})
+	fires := 0
+	const n = 20000
+	for i := 0; i < n; i++ {
+		if fm.ShouldFail() {
+			fires++
+		}
+	}
+	ratio := float64(fires) / float64(n)
+	if ratio < 0.45 || ratio > 0.55 {
+		t.Fatalf("expected ~0.5 failure rate, got %.3f", ratio)
+	}
+}
+
+// TestProbabilisticWebhookRates proves duplicate/drop/out-of-order rates
+// behave within bounds and are reproducible.
+func TestProbabilisticWebhookRates(t *testing.T) {
+	fm := NewFaultManager()
+	fm.Set(FaultConfig{Seed: 7, DuplicateWebhookRate: 0.3, DropWebhookRate: 0.1, OutOfOrderRate: 0.2, DuplicateWebhookCount: 2})
+	drops, dups, ooo := 0, 0, 0
+	const n = 10000
+	for i := 0; i < n; i++ {
+		drop, dup, outOfOrder, copies, _, _ := fm.WebhookOptions()
+		if drop {
+			drops++
+		}
+		if dup {
+			dups++
+			if copies != 3 {
+				t.Fatalf("expected 3 copies on duplicate, got %d", copies)
+			}
+		}
+		if outOfOrder {
+			ooo++
+		}
+	}
+	if got := float64(drops) / n; got < 0.07 || got > 0.13 {
+		t.Fatalf("drop rate ~0.1, got %.3f", got)
+	}
+	if got := float64(dups) / n; got < 0.27 || got > 0.33 {
+		t.Fatalf("dup rate ~0.3, got %.3f", got)
+	}
+	if got := float64(ooo) / n; got < 0.17 || got > 0.23 {
+		t.Fatalf("ooo rate ~0.2, got %.3f", got)
+	}
+}
+
 func TestDuplicateWebhooks(t *testing.T) {
 	count := make(chan int, 100)
 	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

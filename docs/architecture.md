@@ -101,6 +101,19 @@ issued so SSO logins use the same RBAC/session surface. The compose stack ships
 a mock IdP (`cmd/sim-oidc`, `internal/simulator.OIDCProvider`) serving
 discovery, JWKS, and token endpoints.
 
+Hardening (benchmarking + documentation) implemented: the simulator fault
+suite gained a **seeded probabilistic model** (per-request/webhook rates for
+failure, latency range, duplicate/out-of-order/drop/malformed webhooks, and
+rate limiting; seed 42 = reproducible scenario), and the worker's end-of-apply
+write path was consolidated into a single `PersistApplyState` transaction
+(the measured bottleneck was PostgreSQL at ~90% CPU from per-event round-trips).
+Results and methodology are in [benchmarking.md](benchmarking.md); the
+consistency guarantee is formalized in [consistency-model.md](consistency-model.md),
+with [security-model.md](security-model.md),
+[conflict-resolution.md](conflict-resolution.md),
+[customer-deployment.md](customer-deployment.md), and
+[operations-runbook.md](operations-runbook.md) alongside.
+
 ## Process model
 
 | Process | Role | Why a separate process |

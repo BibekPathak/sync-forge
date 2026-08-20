@@ -165,6 +165,11 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) rateLimit(w http.ResponseWriter) bool {
+	// Probabilistic rate limiting: when RateLimitProbability is set, only that
+	// fraction of requests are subject to the bucket limit.
+	if !s.Faults.RateLimited() {
+		return true
+	}
 	if perMin := s.Faults.RateLimitPerMin(); perMin > 0 {
 		s.Rate.SetCapacity(perMin)
 	}

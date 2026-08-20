@@ -51,7 +51,10 @@ func NewSyncMetrics(meter metric.Meter) (*SyncMetrics, error) {
 		return nil, err
 	}
 	duration, err := meter.Float64Histogram("sync_processing_duration_seconds",
-		metric.WithDescription("Time to apply a sync event end-to-end"))
+		metric.WithDescription("Time to apply a sync event end-to-end"),
+		metric.WithExplicitBucketBoundaries(
+			0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60,
+		))
 	if err != nil {
 		return nil, err
 	}
